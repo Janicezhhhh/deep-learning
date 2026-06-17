@@ -1,0 +1,7 @@
+Sample predictions for observed interactions:
+user_id item_id true_rating predicted_rating
+0 3 5 5.00
+1 2 5 5.00
+3 0 3 1.00
+3 3 4 1.00
+4 0 3 1.00

@@ -8,11 +8,11 @@ from torch.utils.data import DataLoader, TensorDataset
 def make_data(n_samples: int = 400, seed: int = 42):
     generator = torch.Generator().manual_seed(seed)
     x = torch.randn((n_samples, 2), generator=generator)
-    y = ((x[:, 0] > 0) ^ (x[:, 1] > 0)).float().unsqueeze(1)
+    y = ((x[:, 0] * x[:, 1]) > 0).float().unsqueeze(1)
     return x, y
 
 
-class SimpleMLP(nn.Module):
+class ClassificationMLP(nn.Module):
     def __init__(self):
         super().__init__()
         self.net = nn.Sequential(
@@ -36,13 +36,13 @@ def plot_classification(x, y, preds):
     wrong = preds != y
     if wrong.any():
         plt.scatter(x[wrong, 0], x[wrong, 1], facecolors="none", edgecolors="black", s=120, linewidths=1.5, label="misclassified")
-    plt.title("Simple DL Classification Input/Output Visualization")
+    plt.title("Classification Input/Output Visualization")
     plt.xlabel("Feature 1")
     plt.ylabel("Feature 2")
     plt.legend(loc="upper left")
     plt.grid(True, linestyle="--", alpha=0.3)
     plt.tight_layout()
-    plt.savefig("simple_dl_plot.png")
+    plt.savefig("classification_plot.png")
     plt.close()
 
 
@@ -57,18 +57,18 @@ def save_io_text(path, x, y, preds):
 
 
 def main():
-    torch.manual_seed(42)
+    torch.manual_seed(1)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     x, y = make_data()
     dataset = TensorDataset(x, y)
     loader = DataLoader(dataset, batch_size=32, shuffle=True)
 
-    model = SimpleMLP().to(device)
+    model = ClassificationMLP().to(device)
     criterion = nn.BCEWithLogitsLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
 
-    for epoch in range(200):
+    for epoch in range(150):
         model.train()
         total_loss = 0.0
         for batch_x, batch_y in loader:
@@ -92,15 +92,15 @@ def main():
         accuracy = (preds == y.to(device)).float().mean().item()
 
     plot_classification(x, y, preds)
-    save_io_text("simple_dl_io.txt", x, y, preds)
+    save_io_text("classification_io.txt", x, y, preds)
 
-    save_path = Path("model.pth")
+    save_path = Path("classification_model.pth")
     torch.save(model.state_dict(), save_path)
 
     print(f"Training complete. Accuracy: {accuracy:.2%}")
     print(f"Model saved to: {save_path.resolve()}")
-    print(f"Visualization saved to: {Path('simple_dl_plot.png').resolve()}")
-    print(f"IO data saved to: {Path('simple_dl_io.txt').resolve()}")
+    print(f"Visualization saved to: {Path('classification_plot.png').resolve()}")
+    print(f"IO data saved to: {Path('classification_io.txt').resolve()}")
 
 
 if __name__ == "__main__":
