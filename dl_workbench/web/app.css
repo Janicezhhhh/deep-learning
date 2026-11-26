@@ -104,6 +104,16 @@ table { border-collapse: collapse; width: 100%; font-size: .89rem; text-align: l
 th, td { white-space: nowrap; border-bottom: 1px solid var(--line); padding: 8px 9px; }
 thead th { color: #304963; background: #edf3f9; }
 tbody th { color: var(--muted); font-weight: 500; }
+.text-cell { white-space: pre-wrap; min-width: 7rem; max-width: 48rem; overflow-wrap: anywhere; }
+.media-form { margin-top: 17px; }
+.media-input { margin: 12px 0; }
+.media-preview { display: block; width: min(100%, 260px); height: 190px; object-fit: contain; background: #eaf0f7; border: 1px solid var(--line); border-radius: 8px; margin: 0 0 12px; }
+audio { display: block; width: min(100%, 450px); margin-bottom: 12px; }
+.sample-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 170px), 1fr)); gap: 10px; }
+.sample { min-width: 0; padding: 10px; border: 1px solid var(--line); border-radius: 8px; }
+.sample .media-preview { width: 100%; height: 115px; }
+.sample p { margin-bottom: 6px; overflow-wrap: anywhere; }
+.sample-text { white-space: pre-wrap; max-height: 8rem; overflow-y: auto; }
 .figure { margin: 0 0 18px; }
 .scatter { position: relative; height: 185px; border: 1px solid var(--line); border-radius: 8px; background: repeating-linear-gradient(0deg, #e5edf7 0 1px, transparent 1px 37px), repeating-linear-gradient(90deg, #e5edf7 0 1px, #f9fbff 1px 10%); }
 .point { position: absolute; transform: translate(-50%, 50%); width: 8px; height: 8px; background: #1454d3; border-radius: 50%; }

@@ -1,1 +1,2 @@
 -r ../classification_project/requirements.txt
+Pillow>=10

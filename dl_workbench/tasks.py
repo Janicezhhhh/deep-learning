@@ -8,6 +8,10 @@ from functools import lru_cache
 from pathlib import Path
 from threading import Lock
 
+from .media import InputError
+from .model_assets import available
+from .vision_tasks import digit_predict, image_dataset, scene_predict
+
 
 ROOT = Path(__file__).resolve().parent.parent
 MAX_ROWS = 2000
@@ -21,12 +25,10 @@ GROUPS = {
     "forecast": "预测数值",
     "explore": "探索数据",
     "recommend": "推荐与评分",
+    "understand": "识别与提取",
+    "transform": "转换与生成",
 }
-INPUT_TYPES = {"table": "数值表格", "series": "时间序列"}
-
-
-class InputError(ValueError):
-    pass
+INPUT_TYPES = {"table": "数值表格", "series": "时间序列", "image": "图片", "text": "文本", "audio": "音频"}
 
 
 @dataclass(frozen=True)
@@ -51,6 +53,13 @@ class Model:
     weights: str
     class_name: str | None
     arguments: tuple = ()
+    asset_key: str = ""
+
+    @property
+    def has_weights(self):
+        if self.asset_key:
+            return available(self.asset_key)
+        return (ROOT / self.module / self.weights).is_file()
 
 
 @dataclass(frozen=True)
@@ -65,13 +74,16 @@ class Task:
     dataset: tuple[str, ...]
     models: tuple[Model, ...]
     parameters: tuple[Parameter, ...]
-    predict: Callable
+    predict: Callable | None
     generate: Callable
     group: str = field(kw_only=True)
     input_type: str = "table"
     result_type: str = "table"
     integer_ranges: tuple[tuple[str, int, int], ...] = ()
     expands_rows: bool = False
+    request_predict: Callable | None = None
+    dataset_type: str = "table"
+    fields: tuple[tuple[str, str], ...] = ()
 
     @property
     def result_columns(self):
@@ -82,7 +94,7 @@ def module_for(model):
     return importlib.import_module(f"{model.module}.train")
 
 
-@lru_cache(maxsize=8)
+@lru_cache(maxsize=16)
 def load(model):
     import torch
 
@@ -199,6 +211,12 @@ MULTIVARIATE = Model("default", "双变量 LSTM", "classic_tabular", "multivaria
 RATINGS = Model("default", "用户–物品评分模型", "recommendation_project", "recommendation_model.pth", "MatrixFactorization", (50, 30))
 HORIZONS = ("forecast_1", "forecast_2", "forecast_3")
 LABEL_COLUMNS = ("label_a", "label_b", "label_c")
+DIGIT = Model("default", "手写数字 CNN", "classic_vision", "digit_cnn.pth", "DigitCNN")
+SHAPES = Model("default", "几何图形分割 CNN", "classic_vision", "shape_net.pth", "ShapeNet")
+IMAGES = Parameter("samples", "图片数", 6, 1, 12)
+DIGITS = (IMAGES, Parameter("digit", "数字（−1 为随机）", -1, -1, 9), SEED)
+SCENES = (IMAGES, Parameter("objects", "每图物体数", 4, 1, 9), SEED)
+BOX_FIELDS = ("instance", "class_name", "probability", "x_min", "y_min", "x_max", "y_max")
 
 
 TASKS = {task.id: task for task in (
@@ -216,6 +234,22 @@ TASKS = {task.id: task for task in (
          "每行提供三个数值。模型独立评估 A、B、C 三种标签，概率达到 0.5 时标为 1。",
          FEATURES[:3], LABEL_COLUMNS + ("probability_a", "probability_b", "probability_c"),
          FEATURES[:3] + LABEL_COLUMNS, (LABELS,), (ROWS, SEED), multilabel, numeric_generator("multilabel_data"), group="classify"),
+    Task("digit", "手写数字识别", "CNN", "识别图片中的一个手写数字，查看 0–9 的类别概率。",
+         "上传包含单个数字、背景干净的 PNG 或 JPEG。模型依据 MNIST 与合成数字训练。",
+         (), ("predicted_label", "probability"), (), (DIGIT,), DIGITS, None, image_dataset("digit"),
+         group="classify", input_type="image", request_predict=digit_predict, dataset_type="samples"),
+    Task("object-detection", "目标检测", "CNN", "定位圆形、方形和三角形，标出检测框。",
+         "用配套样本体验。示例模型面向深色背景的几何图形，框坐标按上传图片的像素计算。",
+         (), BOX_FIELDS, (), (SHAPES,), SCENES, None, image_dataset("detection"),
+         group="understand", input_type="image", result_type="image-preview", request_predict=scene_predict("detection"), dataset_type="samples"),
+    Task("semantic-segmentation", "语义分割", "CNN", "为每个像素标注几何类别，查看分割掩膜。",
+         "用配套样本体验。示例类别为背景、圆形、方形和三角形。",
+         (), ("class_name", "pixel_fraction"), (), (SHAPES,), SCENES, None, image_dataset("semantic"),
+         group="understand", input_type="image", result_type="image-preview", request_predict=scene_predict("semantic"), dataset_type="samples"),
+    Task("instance-segmentation", "实例分割", "CNN 与连通域", "把相互分开的同类几何物体标成独立实例。",
+         "用配套样本体验。同类别物体需要彼此分开，以便模型掩膜的连通域分出不同实例。",
+         (), BOX_FIELDS, (), (SHAPES,), SCENES, None, image_dataset("instance"),
+         group="understand", input_type="image", result_type="image-preview", request_predict=scene_predict("instance"), dataset_type="samples"),
     Task("regression", "数值回归", "MLP", "用三个数值特征预测一个连续数值。",
          "每行提供三个数值特征。示例目标近似为 2×x1 − 1.5×x2 + 0.5×x3。",
          FEATURES[:3], ("prediction",), FEATURES[:3] + ("target",), (
@@ -282,10 +316,11 @@ def catalog():
     return [{
         "id": task.id, "title": task.title, "method": task.method,
         "group": task.group, "input_type": task.input_type, "result_type": task.result_type,
+        "dataset_type": task.dataset_type, "fields": task.fields,
         "summary": task.summary, "input_hint": task.input_hint, "columns": task.columns,
         "output": task.output, "result_columns": task.result_columns, "dataset": task.dataset,
         "integer_ranges": {column: [low, high] for column, low, high in task.integer_ranges},
-        "models": [{"id": m.id, "name": m.name, "has_weights": (ROOT / m.module / m.weights).is_file()}
+        "models": [{"id": m.id, "name": m.name, "has_weights": m.has_weights, "asset_key": m.asset_key}
                    for m in task.models],
         "parameters": [vars(parameter) for parameter in task.parameters],
     } for task in TASKS.values()]
@@ -302,8 +337,10 @@ def generate(task, model, raw):
             requirement = f"，且必须以 {parameter.minimum} 为起点按 {parameter.step} 递增" if parameter.step != 1 else ""
             raise InputError(f"{parameter.label}必须是 {parameter.minimum}–{parameter.maximum} 之间的整数{requirement}。")
         options[parameter.key] = value
-    rows = task.generate(module_for(model), options)
-    return {"columns": task.dataset, "rows": rows}
+    data = task.generate(module_for(model) if model.module else None, options)
+    if task.dataset_type != "table":
+        return data
+    return {"columns": task.dataset, "rows": data}
 
 
 def read_csv(task, source):
@@ -366,3 +403,13 @@ def predict(task, model, source):
     if task.expands_rows:
         return {"columns": task.result_columns, "rows": predictions}
     return {"columns": task.result_columns, "rows": [x + y for x, y in zip(rows, predictions, strict=True)]}
+
+
+def predict_request(task, model, payload):
+    if task.request_predict is None:
+        return predict(task, model, payload.get("csv"))
+    if model.asset_key:
+        return task.request_predict(model.asset_key, payload)
+    with LOAD_LOCK:
+        network = load(model)
+    return task.request_predict(network, payload)

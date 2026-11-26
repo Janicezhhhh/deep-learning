@@ -7,7 +7,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from .tasks import GROUPS, INPUT_TYPES, InputError, MAX_ROWS, TASKS, catalog, generate, model_for, predict
+from .tasks import GROUPS, INPUT_TYPES, InputError, MAX_ROWS, TASKS, catalog, generate, model_for, predict_request
 
 
 STATIC = Path(__file__).resolve().with_name("web")
@@ -39,7 +39,7 @@ class Handler(BaseHTTPRequestHandler):
             filename, mimetype = ASSETS[path]
             self.send_content(HTTPStatus.OK, mimetype, (STATIC / filename).read_bytes())
         elif path == "/api/v1/tasks":
-            missing = [name for name in ("torch", "numpy", "matplotlib") if importlib.util.find_spec(name) is None]
+            missing = [name for name in ("torch", "numpy", "matplotlib", "PIL") if importlib.util.find_spec(name) is None]
             self.json({"tasks": catalog(), "groups": GROUPS, "input_types": INPUT_TYPES,
                        "max_rows": MAX_ROWS, "max_bytes": MAX_BYTES, "missing_dependencies": missing})
         else:
@@ -76,7 +76,7 @@ class Handler(BaseHTTPRequestHandler):
             if action == "generate":
                 result = generate(task, model, body.get("parameters", {}))
             else:
-                result = predict(task, model, body.get("csv"))
+                result = predict_request(task, model, body)
             self.json(result)
         except InputError as error:
             self.json({"error": str(error)}, HTTPStatus.BAD_REQUEST)

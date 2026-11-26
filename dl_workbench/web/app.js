@@ -1,6 +1,6 @@
 const app = document.querySelector('#app');
 const taskNav = document.querySelector('#task-nav');
-const icons = {classification: '◩', regression: '╱', clustering: '⠿', dimensionality: '◇', anomaly: '◎', sequence: '∿', recommendation: '☆'};
+const icons = {classification: '◩', regression: '╱', clustering: '⠿', dimensionality: '◇', anomaly: '◎', sequence: '∿', recommendation: '☆', digit: '✎', 'object-detection': '⊞', 'semantic-segmentation': '▧', 'instance-segmentation': '▥'};
 const labels = {
   predicted_label: '预测类别', probability_1: '类别 1 概率', label: '生成标签',
   prediction: '预测值', target: '生成目标值', cluster: '分组', distance: '到中心的距离',
@@ -9,6 +9,8 @@ const labels = {
   user_id: '用户编号', item_id: '物品编号', predicted_rating: '预测评分', rating: '生成评分',
   probability_0: '类别 0 概率', probability_2: '类别 2 概率', observed: '观测值', absolute_error: '预测偏差',
   query: '输入行号', k: '推荐结果数', rank: '排名',
+  probability: '概率', instance: '实例编号', class_name: '类别', pixel_fraction: '像素占比',
+  x_min: '左边界', y_min: '上边界', x_max: '右边界', y_max: '下边界',
 };
 const scoreColumn = {'anomaly-scores': 'reconstruction_error', 'forecast-errors': 'absolute_error'};
 for (const [i, key] of ['a', 'b', 'c'].entries()) {
@@ -70,11 +72,11 @@ function home() {
   }).join('');
   return `<header class="topline"><span>工作台 / 任务目录</span><span class="chip"><i class="local-dot"></i>本地运行</span></header>
     <section class="hero">
-      <div><h1>选择一个任务</h1><p>使用本地模型分析表格或时间序列。可以先运行示例，再上传自己的数据。</p>
+      <div><h1>选择一个任务</h1><p>按你想完成的目标查找本地模型。可以先运行示例，再使用自己的数据。</p>
       <a class="button primary" href="#data">生成示例数据</a></div>
       <div class="hero-art" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span></div>
     </section>
-    <div class="section-heading"><h2>任务目录</h2><p>${catalog.tasks.length} 类任务 · ${count} 个本地模型或聚类结果</p></div>
+    <div class="section-heading"><h2>任务目录</h2><p>${catalog.tasks.length} 项任务 · ${count} 个可用模型选项</p></div>
     <div class="catalog-filters" aria-label="按输入类型筛选">${[['', '全部输入'], ...Object.entries(catalog.input_types)].filter(([type]) => !type || catalog.tasks.some(task => task.input_type === type)).map(([type, label]) => `<button type="button" data-filter="${type}" aria-pressed="${filter === type}">${escapeHTML(label)}</button>`).join('')}</div>
     ${grouped}`;
 }
@@ -85,23 +87,42 @@ function modelPicker(task, selected, busy) {
 }
 
 function resultPanel(result, task, generation) {
-  if (!result) return `<section class="panel result-panel"><h2>${generation ? '数据预览' : '运行结果'}</h2><div class="empty"><span aria-hidden="true">▤</span><p>${generation ? '生成后可预览数据并下载 CSV。' : '运行完成后，结果会显示在这里。'}</p></div></section>`;
+  if (!result) return `<section class="panel result-panel"><h2>${generation ? '数据预览' : '运行结果'}</h2><div class="empty"><span aria-hidden="true">▤</span><p>${generation ? '生成后可预览和下载数据。' : '运行完成后，结果会显示在这里。'}</p></div></section>`;
+  if (generation && result.samples) return samplePanel(result);
   const columns = result.columns;
   const rows = result.rows;
   const shown = rows.slice(0, 10);
   return `<section class="panel result-panel" aria-label="${generation ? '数据预览' : '运行结果'}">
     <div class="section-heading"><div><h2>${generation ? '数据预览' : '运行结果'}</h2><p role="status">${rows.length} 行${rows.length > shown.length ? ` · 预览前 ${shown.length} 行` : ''}</p></div>
-      <div class="actions"><button data-action="download" ${rows.length ? '' : 'disabled'}>下载 CSV</button>${generation ? `<button class="primary" data-action="transfer" ${rows.length ? '' : 'disabled'}>在任务中使用</button>` : ''}</div></div>
+      <div class="actions">${result.preview ? `<button type="button" data-action="download-preview">下载${result.preview.type === 'audio/wav' ? '音频' : '图像'}</button>` : ''}${columns.length ? `<button data-action="download" ${rows.length ? '' : 'disabled'}>下载 CSV</button>` : ''}${generation ? `<button class="primary" data-action="transfer" ${rows.length ? '' : 'disabled'}>在任务中使用</button>` : ''}</div></div>
     ${!generation && scoreColumn[task.result_type] ? `<button class="sort" data-action="sort">按${labels[scoreColumn[task.result_type]]}从高到低排序</button>` : ''}
     ${!generation ? scatter(task, result) : ''}
-    <div class="table-scroll" tabindex="0" role="region" aria-label="结果表格"><table><thead><tr><th scope="col">行</th>${columns.map(column => `<th scope="col" title="${escapeHTML(column)}">${escapeHTML(labels[column] || column)}</th>`).join('')}</tr></thead>
-      <tbody>${shown.map((row, index) => `<tr><th scope="row">${index + 1}</th>${row.map(value => `<td title="${value}">${format(value)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>
-    ${rows.length ? '' : notice('本次没有生成评分记录。可以调高评分覆盖率后重试。')}</section>`;
+    ${result.preview ? previewMarkup(result.preview, '模型输出') : ''}
+    ${columns.length ? `<div class="table-scroll" tabindex="0" role="region" aria-label="结果表格"><table><thead><tr><th scope="col">行</th>${columns.map(column => `<th scope="col" title="${escapeHTML(column)}">${escapeHTML(labels[column] || column)}</th>`).join('')}</tr></thead>
+      <tbody>${shown.map((row, index) => `<tr><th scope="row">${index + 1}</th>${row.map(value => `<td${typeof value === 'string' ? ' class="text-cell"' : ` title="${value}"`}>${format(value)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>` : ''}
+    ${rows.length || !columns.length ? '' : notice(generation ? '本次没有生成评分记录。可以调高评分覆盖率后重试。' : '未找到符合模型类别的结果。')}</section>`;
 }
 
 function format(value) {
+  if (typeof value === 'string') return escapeHTML(value);
   if (value !== 0 && Math.abs(value) < 0.0001) return value.toExponential(2);
   return value.toLocaleString('zh-CN', {maximumFractionDigits: 5, useGrouping: false});
+}
+
+function previewMarkup(media, label) {
+  const src = `data:${escapeHTML(media.type)};base64,${escapeHTML(media.data)}`;
+  return media.type === 'audio/wav' ? `<audio controls preload="none" src="${src}" aria-label="${label}"></audio>` :
+    `<img class="media-preview" alt="${label}" src="${src}">`;
+}
+
+function samplePanel(dataset) {
+  return `<section class="panel result-panel" aria-label="数据预览"><div class="section-heading"><div><h2>数据预览</h2><p role="status">${dataset.samples.length} 条样本</p></div>
+    <button data-action="download-dataset">下载数据集 ZIP</button></div>
+    <div class="sample-grid">${dataset.samples.map((sample, index) => `<article class="sample">
+      ${sample.data ? previewMarkup(sample, `样本 ${index + 1}`) : `<p class="sample-text">${escapeHTML(Object.values(sample.fields).join('\n'))}</p>`}
+      <p>${escapeHTML(sample.target.label === undefined ? sample.target.objects ? `${sample.target.objects.length} 个物体` : sample.name : `标签 ${sample.target.label}`)}</p>
+      <button data-action="sample" data-index="${index}">在任务中使用</button>
+    </article>`).join('')}</div></section>`;
 }
 
 function scatter(task, result) {
@@ -118,6 +139,7 @@ function scatter(task, result) {
 }
 
 function taskPage(task) {
+  if (['image', 'text', 'audio'].includes(task.input_type)) return mediaTaskPage(task);
   const current = state.get(task.id);
   const {model, busy, tab, error, info, csv, manual, result} = current;
   return `<header class="topline"><a href="#home">任务目录</a><span>${escapeHTML(task.title)}</span></header>
@@ -136,6 +158,23 @@ function taskPage(task) {
       </form>${notice(error, 'alert')}${notice(info)}</section>${resultPanel(result, task, false)}`;
 }
 
+function mediaTaskPage(task) {
+  const {model, busy, error, info, media, fields, result} = state.get(task.id);
+  const selected = task.models.find(item => item.id === model);
+  const isText = task.input_type === 'text';
+  const isImage = task.input_type === 'image';
+  const title = isImage ? '选择图片' : '选择 WAV 音频';
+  return `<header class="topline"><a href="#home">任务目录</a><span>${escapeHTML(task.title)}</span></header>
+    <div class="page-heading">${icon(task)}<div><h1>${escapeHTML(task.title)}</h1><p>${escapeHTML(task.summary)}</p></div></div>
+    <section class="panel"><div class="section-heading"><h2>准备数据</h2><a class="button" href="#data/${task.id}">生成数据</a></div>
+      ${modelPicker(task, model, busy)}<p class="hint">${escapeHTML(task.input_hint)}</p>
+      ${selected.has_weights ? '' : notice(`本机还未准备这个模型的权重。${selected.asset_key ? `按 README 安装可选依赖，再下载 ${selected.asset_key} 并刷新。` : '请确认仓库中的权重文件完整。'}`)}
+      <form id="predict-form" class="media-form">${isText ? task.fields.map(([name, label]) => `<label class="csv-label" for="text-${name}">${escapeHTML(label)}</label><textarea id="text-${name}" name="${name}" rows="4" maxlength="4000" ${busy ? 'disabled' : ''} required>${escapeHTML(fields[name] || '')}</textarea>`).join('') :
+        `<label class="file-label">${title} <input type="file" id="media-file" accept="${isImage ? '.png,.jpg,.jpeg,image/png,image/jpeg' : '.wav,audio/wav'}" ${busy ? 'disabled' : ''}></label>${media ? `<div class="media-input">${previewMarkup(media, '当前输入')}<p class="hint">${escapeHTML(media.name)}</p></div>` : ''}`}
+        <div class="actions"><button type="submit" class="primary" ${busy || !selected.has_weights || (!isText && !media) ? 'disabled' : ''}>${busy === 'predict' ? '正在运行…' : '运行模型'}</button><button type="button" data-action="example" ${busy ? 'disabled' : ''}>${busy === 'example' ? '正在加载…' : '加载示例'}</button></div>
+      </form>${notice(error, 'alert')}${notice(info)}</section>${resultPanel(result, task, false)}`;
+}
+
 function dataPage(task) {
   const current = state.get(task.id);
   const {parameters, model, busy, generated, generationError} = current;
@@ -147,16 +186,34 @@ function dataPage(task) {
 }
 
 function toCSV(columns, rows) {
-  return `${columns.join(',')}\n${rows.map(row => row.join(',')).join('\n')}\n`;
+  const cell = value => typeof value !== 'string' ? String(value) : `"${value.replaceAll('"', '""')}"`;
+  return `${columns.join(',')}\n${rows.map(row => row.map(cell).join(',')).join('\n')}\n`;
 }
 
 function download(filename, csv) {
-  const url = URL.createObjectURL(new Blob(['\ufeff', csv], {type: 'text/csv;charset=utf-8'}));
+  downloadFile(filename, new Blob(['\ufeff', csv], {type: 'text/csv;charset=utf-8'}));
+}
+
+function downloadFile(filename, blob) {
+  const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = url;
   link.download = filename;
   link.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function downloadBase64(filename, type, data) {
+  const bytes = Uint8Array.from(atob(data), char => char.charCodeAt(0));
+  downloadFile(filename, new Blob([bytes], {type}));
+}
+
+function selectSample(current, sample) {
+  current.media = sample.data ? sample : null;
+  current.fields = {...sample.fields};
+  current.result = null;
+  current.error = '';
+  current.info = '已加载示例。点击「运行模型」查看结果。';
 }
 
 async function request(task, action, body) {
@@ -184,16 +241,22 @@ async function run(task, action) {
   render();
   try {
     if (action === 'predict') {
-      const input = tab === 'csv' ? csv : toCSV(task.columns, [task.columns.map(column => manual[column])]);
-      current.result = await request(task, 'predict', {model, csv: input});
+      let input;
+      if (task.input_type === 'text') input = current.fields;
+      else if (['image', 'audio'].includes(task.input_type)) input = {[task.input_type]: current.media?.data || ''};
+      else input = {csv: tab === 'csv' ? csv : toCSV(task.columns, [task.columns.map(column => manual[column])])};
+      current.result = await request(task, 'predict', {model, ...input});
     } else if (action === 'example') {
-      const generated = await request(task, 'generate', {model});
-      const n = Math.min(12, generated.rows.length);
-      const rows = task.id === 'anomaly' ? [...generated.rows.slice(0, 8), ...generated.rows.slice(-4)] :
-        Array.from({length: n}, (_, i) => generated.rows[Math.floor(i * generated.rows.length / n)]);
-      current.csv = toCSV(generated.columns, rows);
-      current.tab = 'csv';
-      current.info = `已加载 ${rows.length} 条示例记录。点击「运行模型」查看结果。`;
+      const generated = await request(task, 'generate', {model, parameters: task.dataset_type === 'samples' ? {samples: 1} : {}});
+      if (generated.samples) selectSample(current, generated.samples[0]);
+      else {
+        const n = Math.min(12, generated.rows.length);
+        const rows = task.id === 'anomaly' ? [...generated.rows.slice(0, 8), ...generated.rows.slice(-4)] :
+          Array.from({length: n}, (_, i) => generated.rows[Math.floor(i * generated.rows.length / n)]);
+        current.csv = toCSV(generated.columns, rows);
+        current.tab = 'csv';
+        current.info = `已加载 ${rows.length} 条示例记录。点击「运行模型」查看结果。`;
+      }
     } else {
       current.generated = await request(task, 'generate', {model, parameters: Object.fromEntries(Object.entries(parameters).map(([key, value]) => [key, Number(value)]))});
     }
@@ -212,6 +275,7 @@ app.addEventListener('input', event => {
   const {target} = event;
   if (target.closest('#generate-form')) current.parameters[target.name] = target.value;
   else if (target.id === 'csv-input') current.csv = target.value;
+  else if (target.id?.startsWith('text-')) current.fields[target.name] = target.value;
   else if (target.closest('#predict-form') && target.type === 'number') current.manual[target.name] = target.value;
 });
 
@@ -229,6 +293,31 @@ app.addEventListener('change', async event => {
     current.error = '';
     render();
     document.querySelector('#model-picker')?.focus();
+  }
+  if (target.id === 'media-file' && target.files.length) {
+    const file = target.files[0];
+    current.media = null;
+    current.error = '';
+    current.info = '';
+    current.result = null;
+    current.busy = 'upload';
+    render();
+    try {
+      if (file.size > Math.floor(catalog.max_bytes * .70)) throw new Error('文件太大，请选择不超过 1.4 MiB 的文件。');
+      const data = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result.split(',')[1]);
+        reader.onerror = () => reject(new Error('无法读取文件。'));
+        reader.readAsDataURL(file);
+      });
+      const type = task.input_type === 'audio' ? 'audio/wav' : (/\.jpe?g$/i.test(file.name) ? 'image/jpeg' : 'image/png');
+      current.media = {data, type, name: file.name};
+    } catch (error) {
+      current.error = error.message;
+    } finally {
+      current.busy = '';
+      if (route().task === task) render();
+    }
   }
   if (target.id === 'csv-file' && target.files.length) {
     const file = target.files[0];
@@ -272,7 +361,17 @@ app.addEventListener('click', event => {
   if (action === 'template') download(`${task.id}-template.csv`, toCSV(task.columns, []));
   if (action === 'download') {
     const result = page === 'data' ? current.generated : current.result;
-    download(`${task.id}-${page === 'data' ? 'data' : 'result'}.csv`, toCSV(result.columns, result.rows));
+    const safeRows = result.rows.map(row => row.map(value => typeof value === 'string' && /^\s*[=+\-@]/.test(value) ? `'${value}` : value));
+    download(`${task.id}-${page === 'data' ? 'data' : 'result'}.csv`, toCSV(result.columns, safeRows));
+  }
+  if (action === 'download-preview') {
+    const {type, data} = current.result.preview;
+    downloadBase64(`${task.id}-result.${type === 'audio/wav' ? 'wav' : 'png'}`, type, data);
+  }
+  if (action === 'download-dataset') downloadBase64(`${task.id}-dataset.zip`, 'application/zip', current.generated.archive);
+  if (action === 'sample') {
+    selectSample(current, current.generated.samples[Number(button.dataset.index)]);
+    location.hash = task.id;
   }
   if (action === 'transfer') {
     current.csv = toCSV(current.generated.columns, current.generated.rows);
@@ -305,7 +404,7 @@ async function initialize() {
     byId = new Map(catalog.tasks.map(task => [task.id, task]));
     dataTask = catalog.tasks[0];
     for (const task of catalog.tasks) {
-      state.set(task.id, {model: task.models[0].id, tab: 'manual', csv: '', manual: {},
+      state.set(task.id, {model: task.models[0].id, tab: 'manual', csv: '', manual: {}, fields: {},
         parameters: Object.fromEntries(task.parameters.map(parameter => [parameter.key, parameter.default]))});
     }
     taskNav.innerHTML = Object.entries(catalog.groups).map(([group, label]) => {
