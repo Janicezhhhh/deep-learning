@@ -94,19 +94,42 @@ function resultPanel(result, task, generation) {
   if (generation && result.samples) return samplePanel(result);
   const columns = result.columns;
   const rows = result.rows;
-  const shown = rows.slice(0, 10);
+  const matchColumn = columns.indexOf('label_match');
+  const errorsOnly = matchColumn >= 0 && state.get(task.id).errorsOnly;
+  const visible = errorsOnly ? rows.filter(row => row[matchColumn] === 0) : rows;
+  const shown = visible.slice(0, 10);
   return `<section class="panel result-panel" aria-label="${generation ? '数据预览' : '运行结果'}">
-    <div class="section-heading"><div><h2>${generation ? '数据预览' : '运行结果'}</h2><p role="status">${columns.length ? `${rows.length} 行${rows.length > shown.length ? ` · 预览前 ${shown.length} 行` : ''}` : '已生成'}</p></div>
+    <div class="section-heading"><div><h2>${generation ? '数据预览' : '运行结果'}</h2><p role="status">${columns.length ? `${visible.length} 行${visible.length > shown.length ? ` · 预览前 ${shown.length} 行` : ''}` : '已生成'}</p></div>
       <div class="actions">${result.preview ? `<button type="button" data-action="download-preview">下载${result.preview.type === 'audio/wav' ? '音频' : '图像'}</button>` : ''}${columns.length ? `<button data-action="download" ${rows.length ? '' : 'disabled'}>下载 CSV</button>` : ''}${generation ? `<button class="primary" data-action="transfer" ${rows.length ? '' : 'disabled'}>在任务中使用</button>` : ''}</div></div>
     ${!generation && scoreColumn[task.result_type] ? `<button class="sort" data-action="sort">按${labels[scoreColumn[task.result_type]]}从高到低排序</button>` : ''}
+    ${result.evaluation ? evaluationPanel(result.evaluation) : ''}
+    ${matchColumn >= 0 ? `<button type="button" class="sort" data-action="errors-only" aria-pressed="${!!errorsOnly}">${errorsOnly ? '显示全部样本' : '只看预测错误'}</button>` : ''}
     ${!generation ? scatter(task, result) : ''}
     ${result.preview ? previewMarkup(result.preview, '模型输出') : ''}
-    ${columns.length ? `<div class="table-scroll" tabindex="0" role="region" aria-label="结果表格"><table><thead><tr><th scope="col">行</th>${columns.map(column => `<th scope="col" title="${escapeHTML(column)}">${escapeHTML(labels[column] || column)}</th>`).join('')}</tr></thead>
-      <tbody>${shown.map((row, index) => `<tr><th scope="row">${index + 1}</th>${row.map(value => `<td${typeof value === 'string' ? ' class="text-cell"' : ` title="${value}"`}>${format(value)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>` : ''}
+    ${columns.length ? `<div class="table-scroll" tabindex="0" role="region" aria-label="结果表格"><table><thead><tr><th scope="col">行</th>${columns.map(column => `<th scope="col" title="${escapeHTML(column)}">${escapeHTML(columnLabel(column))}</th>`).join('')}</tr></thead>
+      <tbody>${shown.map((row, index) => `<tr><th scope="row">${index + 1}</th>${row.map((value, cell) => cell === matchColumn ? `<td class="${value === 0 ? 'wrong' : ''}">${value === null ? '未标注' : value ? '正确' : '错误'}</td>` : `<td${typeof value === 'string' ? ' class="text-cell"' : value === null ? '' : ` title="${value}"`}>${format(value)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>` : ''}
+    ${errorsOnly && !visible.length ? notice('本次已标注样本中没有预测错误。') : ''}
     ${rows.length || !columns.length ? '' : notice(generation ? '本次没有生成评分记录。可以调高评分覆盖率后重试。' : '未找到符合模型类别的结果。')}</section>`;
 }
 
+function columnLabel(column) {
+  if (column === 'sample_index') return '原样本编号';
+  if (column === 'label_match') return '对照结果';
+  if (column === 'row_mae') return '该行平均绝对误差';
+  if (column.startsWith('reference_')) {
+    const key = column.slice(10);
+    return `参考 ${key === 'label' ? '类别' : (labels[key] || key)}`;
+  }
+  return labels[column] || column;
+}
+
+function evaluationPanel(evaluation) {
+  return `<div class="evaluation"><h3>参考答案对照</h3><p class="hint">已对照 ${evaluation.count} 个样本</p>
+    <dl>${evaluation.metrics.map(item => `<div><dt>${escapeHTML(item.label)}</dt><dd>${item.unit === 'percent' ? `${(item.value * 100).toFixed(1)}%` : item.unit === 'match' ? item.value ? '正确' : '错误' : format(item.value)}</dd></div>`).join('')}</dl></div>`;
+}
+
 function format(value) {
+  if (value === null) return '—';
   if (typeof value === 'string') return escapeHTML(value);
   if (value !== 0 && Math.abs(value) < 0.0001) return value.toExponential(2);
   return value.toLocaleString('zh-CN', {maximumFractionDigits: 5, useGrouping: false});
@@ -157,7 +180,7 @@ function taskPage(task) {
           const range = task.integer_ranges[column];
           return `<label>${labels[column] || column}<input name="${column}" type="number" ${range ? `min="${range[0]}" max="${range[1]}" step="1"` : 'step="any"'} value="${escapeHTML(manual[column] || '')}" required ${busy ? 'disabled' : ''}></label>`;
         }).join('')}</div>` :
-          `<label class="csv-label" for="csv-input">上传或粘贴 CSV</label><p class="hint">必需列 ${task.columns.join('、')}。每次最多 ${catalog.max_rows} 行。</p><textarea id="csv-input" name="csv" rows="5" placeholder="${task.columns.join(',')}" ${busy ? 'disabled' : ''}>${escapeHTML(csv)}</textarea><label class="file-label">选择 CSV 文件 <input type="file" id="csv-file" accept=".csv,text/csv" ${busy ? 'disabled' : ''}></label>`}
+          `<label class="csv-label" for="csv-input">上传或粘贴 CSV</label><p class="hint">必需列 ${task.columns.join('、')}。每次最多 ${catalog.max_rows} 行。${task.reference_columns.length ? `带 ${task.reference_columns.join('、')} 列时，会对照参考答案。` : ''}</p><textarea id="csv-input" name="csv" rows="5" placeholder="${task.columns.join(',')}" ${busy ? 'disabled' : ''}>${escapeHTML(csv)}</textarea><label class="file-label">选择 CSV 文件 <input type="file" id="csv-file" accept=".csv,text/csv" ${busy ? 'disabled' : ''}></label>`}
         <div class="actions"><button class="primary" type="submit" ${busy ? 'disabled' : ''}>${busy === 'predict' ? '正在运行…' : '运行模型'}</button><button type="button" data-action="example" ${busy ? 'disabled' : ''}>${busy === 'example' ? '正在加载…' : '加载示例'}</button><button type="button" data-action="template" ${busy ? 'disabled' : ''}>下载 CSV 模板</button></div>
       </form>${notice(error, 'alert')}${notice(info)}</section>${resultPanel(result, task, false)}`;
 }
@@ -196,7 +219,7 @@ function dataPage(task) {
 }
 
 function toCSV(columns, rows) {
-  const cell = value => typeof value !== 'string' ? String(value) : `"${value.replaceAll('"', '""')}"`;
+  const cell = value => value === null ? '' : typeof value !== 'string' ? String(value) : `"${value.replaceAll('"', '""')}"`;
   return `${columns.join(',')}\n${rows.map(row => row.map(cell).join(',')).join('\n')}\n`;
 }
 
@@ -248,13 +271,20 @@ async function run(task, action) {
     current.error = '';
     current.info = '';
     current.result = null;
+    current.errorsOnly = false;
   }
   render();
   try {
     if (action === 'predict') {
       let input;
       if (task.input_type === 'text') input = task.batch_limit && tab === 'csv' ? {csv} : current.fields;
-      else if (['image', 'audio'].includes(task.input_type)) input = {[task.input_type]: current.media?.data || ''};
+      else if (['image', 'audio'].includes(task.input_type)) {
+        input = {[task.input_type]: current.media?.data || ''};
+        if (task.input_type === 'image' && current.media?.target) {
+          input.reference = current.media.target;
+          input.reference_mask = current.media.reference_mask;
+        }
+      }
       else input = {csv: tab === 'csv' ? csv : toCSV(task.columns, [task.columns.map(column => manual[column])])};
       current.result = await request(task, 'predict', {model, ...input});
     } else if (action === 'example') {
@@ -400,6 +430,11 @@ app.addEventListener('click', event => {
     current.result.rows.sort((a, b) => b[index] - a[index]);
     render();
     document.querySelector('[data-action="sort"]')?.focus();
+  }
+  if (action === 'errors-only') {
+    current.errorsOnly = !current.errorsOnly;
+    render();
+    document.querySelector('[data-action="errors-only"]')?.focus();
   }
   if (action === 'manual' || action === 'csv') {
     current.tab = action;

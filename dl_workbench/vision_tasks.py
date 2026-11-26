@@ -2,6 +2,7 @@ import io
 from collections import deque
 from random import Random
 
+from .evaluation import metric
 from .media import InputError, binary_input, dataset_zip, encode
 
 
@@ -60,7 +61,18 @@ def digit_predict(network, payload):
     with torch.inference_mode():
         probabilities = network(image_tensor(image)[None]).softmax(dim=1)[0].tolist()
     rows = sorted(enumerate(probabilities), key=lambda row: row[1], reverse=True)
-    return {"columns": ("predicted_label", "probability"), "rows": rows}
+    result = {"columns": ("predicted_label", "probability"), "rows": rows}
+    reference = payload.get("reference")
+    if reference is not None:
+        label = reference.get("label") if isinstance(reference, dict) else None
+        if type(label) is not int or not 0 <= label <= 9:
+            raise InputError("参考数字必须是 0–9 的整数。")
+        prediction = rows[0][0]
+        result["evaluation"] = {"count": 1, "metrics": [metric("参考数字", label), metric("首选预测", prediction),
+                                                        metric("识别正确", int(label == prediction), "match")]}
+        result["columns"] += ("reference_label",)
+        result["rows"] = [[*row, label] for row in rows]
+    return result
 
 
 def connected_objects(classes):
@@ -85,6 +97,78 @@ def connected_objects(classes):
                 yield label, ys, xs, (xs.min(), ys.min(), min(width, xs.max() + 1), min(height, ys.max() + 1))
 
 
+def box_iou(a, b):
+    area_a = (a[2] - a[0]) * (a[3] - a[1])
+    area_b = (b[2] - b[0]) * (b[3] - b[1])
+    overlap = max(0, min(a[2], b[2]) - max(a[0], b[0])) * max(0, min(a[3], b[3]) - max(a[1], b[1]))
+    union = area_a + area_b - overlap
+    return overlap / union if union else 0
+
+
+def scene_evaluation(kind, reference, mask_data, image, classes, objects, rows):
+    import numpy as np
+    from PIL import Image
+
+    if not isinstance(reference, dict):
+        raise InputError("图片参考标注格式有误。")
+    if kind != "detection":
+        try:
+            with Image.open(io.BytesIO(binary_input(mask_data, "参考掩膜")), formats=("PNG",)) as mask:
+                if mask.mode != "L" or mask.size != image.size:
+                    raise InputError("参考掩膜需要与图片同尺寸，使用灰度 PNG 存储类别或实例编号。")
+                truth = np.asarray(mask.resize((classes.shape[1], classes.shape[0]), Image.Resampling.NEAREST))
+        except (OSError, Image.DecompressionBombError) as error:
+            raise InputError("无法读取参考掩膜。") from error
+        if kind == "semantic":
+            if truth.max() > 3:
+                raise InputError("语义参考掩膜的像素类别必须为 0–3。")
+            ious = []
+            for label in range(1, 4):
+                actual, predicted = truth == label, classes == label
+                if union := (actual | predicted).sum():
+                    ious.append(float((actual & predicted).sum() / union))
+            metrics = [metric("像素准确率", float((truth == classes).mean()), "percent")]
+            if ious:
+                metrics.append(metric("前景平均交并比", sum(ious) / len(ious), "percent"))
+            return metrics
+
+    targets = reference.get("objects")
+    if not isinstance(targets, list) or len(targets) > 32:
+        raise InputError("参考物体列表格式有误。")
+    matches = []
+    for j, target in enumerate(targets):
+        if not isinstance(target, dict) or type(target.get("class_id")) is not int or not 1 <= target["class_id"] <= 3:
+            raise InputError("参考物体需要有效的类别编号。")
+        if kind == "detection":
+            box = target.get("bbox_xyxy")
+            if (not isinstance(box, list) or len(box) != 4 or not all(type(v) is int for v in box)
+                    or not (0 <= box[0] < box[2] <= image.width and 0 <= box[1] < box[3] <= image.height)):
+                raise InputError("参考检测框需要包含图像内的四个整数坐标。")
+        else:
+            instance = target.get("instance")
+            if type(instance) is not int or not 1 <= instance <= 32:
+                raise InputError("参考实例编号必须为 1–32。")
+            actual = truth == instance
+        for i, (label, ys, xs, _) in enumerate(objects):
+            if label != target["class_id"]:
+                continue
+            if kind == "detection":
+                score = box_iou(box, rows[i][3:])
+            else:
+                intersection = actual[ys, xs].sum()
+                score = float(intersection / (actual.sum() + len(xs) - intersection))
+            if score >= .5:
+                matches.append((score, i, j))
+    seen_predictions, seen_targets = set(), set()
+    for _, i, j in sorted(matches, reverse=True):
+        if i not in seen_predictions and j not in seen_targets:
+            seen_predictions.add(i)
+            seen_targets.add(j)
+    count = len(seen_targets)
+    return [metric("参考物体", len(targets)), metric("正确匹配（IoU ≥ 0.5）", count),
+            metric("漏检", len(targets) - count), metric("多检", len(objects) - count)]
+
+
 def scene_predict(kind):
     def infer(network, payload):
         import numpy as np
@@ -97,6 +181,7 @@ def scene_predict(kind):
         with torch.inference_mode():
             softmax = network(image_tensor(resized)[None]).softmax(dim=1)[0]
             classes = softmax.argmax(dim=0).numpy()
+        objects = []
         if kind == "semantic":
             preview = Image.fromarray(np.array(PALETTE, dtype=np.uint8)[classes])
             rows = [[name, float((classes == label).mean())] for label, name in enumerate(CLASSES)]
@@ -122,7 +207,11 @@ def scene_predict(kind):
             if kind == "instance":
                 preview = Image.fromarray(colors)
             columns = ("instance", "class_name", "probability", "x_min", "y_min", "x_max", "y_max")
-        return {"columns": columns, "rows": rows, "preview": {"type": "image/png", "data": encode(png(preview))}}
+        result = {"columns": columns, "rows": rows, "preview": {"type": "image/png", "data": encode(png(preview))}}
+        if payload.get("reference") is not None:
+            metrics = scene_evaluation(kind, payload["reference"], payload.get("reference_mask"), image, classes, objects, rows)
+            result["evaluation"] = {"count": 1, "metrics": metrics}
+        return result
     return infer
 
 
@@ -133,6 +222,7 @@ def image_dataset(kind):
         for i in range(options["samples"]):
             name = f"sample-{i + 1:02}.png"
             target = {}
+            reference_mask = None
             if kind == "digit":
                 label = (rng.randrange(10) if options["digit"] == -1 else options["digit"])
                 image = module.drawn_digit(label, rng)
@@ -143,9 +233,12 @@ def image_dataset(kind):
                 if kind in ("semantic", "instance"):
                     mask = semantic if kind == "semantic" else instances
                     target["mask"] = f"mask-{i + 1:02}.png"
-                    files.append((target["mask"], png(mask)))
+                    mask_bytes = png(mask)
+                    files.append((target["mask"], mask_bytes))
+                    reference_mask = encode(mask_bytes)
             payload = png(image)
             files.append((name, payload))
-            samples.append({"name": name, "type": "image/png", "data": encode(payload), "target": target})
+            samples.append({"name": name, "type": "image/png", "data": encode(payload), "target": target,
+                            **({"reference_mask": reference_mask} if reference_mask else {})})
         return {"samples": samples, "archive": dataset_zip(files, [{"image": s["name"], **s["target"]} for s in samples])}
     return generate

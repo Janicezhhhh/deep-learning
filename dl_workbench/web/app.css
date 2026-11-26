@@ -105,6 +105,11 @@ th, td { white-space: nowrap; border-bottom: 1px solid var(--line); padding: 8px
 thead th { color: #304963; background: #edf3f9; }
 tbody th { color: var(--muted); font-weight: 500; }
 .text-cell { white-space: pre-wrap; min-width: 7rem; max-width: 48rem; overflow-wrap: anywhere; }
+.evaluation { margin: 0 0 14px; padding: 14px; border: 1px solid var(--line); border-radius: 8px; background: #f6f9fd; }
+.evaluation dl { display: flex; flex-wrap: wrap; gap: 12px 26px; margin: 10px 0 0; }
+.evaluation dt { color: var(--muted); font-size: .88rem; }
+.evaluation dd { margin: 1px 0 0; font-size: 1.2rem; font-weight: 700; }
+.wrong { color: #8e2519; background: #fff0ed; }
 .media-form { margin-top: 17px; }
 .media-input { margin: 12px 0; }
 .media-preview { display: block; width: min(100%, 260px); height: 190px; object-fit: contain; background: #eaf0f7; border: 1px solid var(--line); border-radius: 8px; margin: 0 0 12px; }

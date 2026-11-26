@@ -8,6 +8,7 @@ from functools import lru_cache
 from pathlib import Path
 from threading import Lock
 
+from .evaluation import REFERENCES, evaluate_table
 from .language_tasks import audio_predict, sample_dataset, text_predict
 from .media import InputError
 from .model_assets import available
@@ -357,6 +358,7 @@ def catalog():
         "dataset_type": task.dataset_type, "fields": task.fields, "batch_limit": task.batch_limit,
         "summary": task.summary, "input_hint": task.input_hint, "columns": task.columns,
         "output": task.output, "result_columns": task.result_columns, "dataset": task.dataset,
+        "reference_columns": REFERENCES[task.id].columns if task.id in REFERENCES else (),
         "integer_ranges": {column: [low, high] for column, low, high in task.integer_ranges},
         "models": [{"id": m.id, "name": m.name, "has_weights": m.has_weights, "asset_key": m.asset_key}
                    for m in task.models],
@@ -387,6 +389,8 @@ def read_csv(task, source):
     reader = csv.reader(io.StringIO(source.removeprefix("\ufeff")), strict=True)
     required = task.columns
     rows = []
+    answers = []
+    reference = REFERENCES.get(task.id)
     integer_ranges = {column: (low, high) for column, low, high in task.integer_ranges}
     try:
         header = next(reader, None)
@@ -399,6 +403,8 @@ def read_csv(task, source):
         if missing:
             raise InputError("CSV 缺少列 " + "、".join(missing))
         positions = [header.index(column) for column in required]
+        reference_positions = ([header.index(column) for column in reference.columns]
+                               if reference and all(column in header for column in reference.columns) else [])
         for record in reader:
             line = reader.line_num
             if not record:
@@ -421,15 +427,18 @@ def read_csv(task, source):
                         raise InputError(f"CSV 第 {line} 行的 {column} 需要是 {low}–{high} 之间的整数。")
                 values.append(value)
             rows.append(values)
+            if reference_positions:
+                answers.append([reference.parse(record[index], column, line)
+                                for index, column in zip(reference_positions, reference.columns, strict=True)])
     except csv.Error as error:
         raise InputError(f"CSV 第 {reader.line_num} 行格式有误。") from error
     if not rows:
         raise InputError("CSV 需要至少一行数据。")
-    return rows
+    return rows, answers
 
 
 def predict(task, model, source):
-    rows = read_csv(task, source)
+    rows, answers = read_csv(task, source)
     import torch
 
     with LOAD_LOCK:
@@ -440,7 +449,8 @@ def predict(task, model, source):
         raise InputError("模型返回了无效的数值。请检查输入范围或更换模型权重。")
     if task.expands_rows:
         return {"columns": task.result_columns, "rows": predictions}
-    return {"columns": task.result_columns, "rows": [x + y for x, y in zip(rows, predictions, strict=True)]}
+    result = {"columns": task.result_columns, "rows": [x + y for x, y in zip(rows, predictions, strict=True)]}
+    return evaluate_table(result, REFERENCES.get(task.id), answers)
 
 
 def predict_request(task, model, payload):
