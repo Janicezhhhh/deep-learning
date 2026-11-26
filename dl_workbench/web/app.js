@@ -11,6 +11,9 @@ const labels = {
   query: '输入行号', k: '推荐结果数', rank: '排名',
   probability: '概率', instance: '实例编号', class_name: '类别', pixel_fraction: '像素占比',
   x_min: '左边界', y_min: '上边界', x_max: '右边界', y_max: '下边界',
+  entity: '实体', entity_type: '实体类型', start: '起始位置', end: '结束位置',
+  answer: '答案', translation: '译文', summary: '摘要', generated_text: '生成文本', transcript: '转写文本',
+  positive_probability: '正向概率', negative_probability: '负向概率',
 };
 const scoreColumn = {'anomaly-scores': 'reconstruction_error', 'forecast-errors': 'absolute_error'};
 for (const [i, key] of ['a', 'b', 'c'].entries()) {
@@ -67,7 +70,7 @@ function home() {
     const tasks = visible.filter(task => task.group === group);
     if (!tasks.length) return '';
     return `<section class="task-group" aria-labelledby="group-${group}"><h3 id="group-${group}">${escapeHTML(label)}</h3><div class="task-grid">
-      ${tasks.map(task => `<a class="task-card" href="#${task.id}">${icon(task)}<span class="method">${escapeHTML(catalog.input_types[task.input_type])}</span><h4>${escapeHTML(task.title)}</h4><p>${escapeHTML(task.summary)}</p><span class="card-action">打开任务</span></a>`).join('')}
+      ${tasks.map(task => `<a class="task-card" href="#${task.id}">${icon(task)}<span class="method">${escapeHTML(catalog.input_types[task.input_type])}</span><h4>${escapeHTML(task.title)}</h4><p>${escapeHTML(task.summary)}</p><span class="card-action">${task.models.some(model => model.has_weights) ? '打开任务' : '查看模型安装说明'}</span></a>`).join('')}
       </div></section>`;
   }).join('');
   return `<header class="topline"><span>工作台 / 任务目录</span><span class="chip"><i class="local-dot"></i>本地运行</span></header>
@@ -82,8 +85,8 @@ function home() {
 }
 
 function modelPicker(task, selected, busy) {
-  if (task.models.length === 1) return `<div class="model-detail"><span>当前模型</span><strong>${escapeHTML(task.models[0].name)}</strong></div>`;
-  return `<label class="model-detail" for="model-picker"><span>选择模型</span><select id="model-picker" ${busy ? 'disabled' : ''}>${task.models.map(model => `<option value="${model.id}" ${model.id === selected ? 'selected' : ''}>${escapeHTML(model.name)}</option>`).join('')}</select></label>`;
+  if (task.models.length === 1) return `<div class="model-detail"><span>当前模型</span><strong>${escapeHTML(task.models[0].name)}</strong>${task.models[0].name !== task.method ? `<small class="method">${escapeHTML(task.method)}</small>` : ''}</div>`;
+  return `<label class="model-detail" for="model-picker"><span>选择模型</span><select id="model-picker" ${busy ? 'disabled' : ''}>${task.models.map(model => `<option value="${model.id}" ${model.id === selected ? 'selected' : ''}>${escapeHTML(model.name)}</option>`).join('')}</select><small class="method">${escapeHTML(task.method)}</small></label>`;
 }
 
 function resultPanel(result, task, generation) {
@@ -93,7 +96,7 @@ function resultPanel(result, task, generation) {
   const rows = result.rows;
   const shown = rows.slice(0, 10);
   return `<section class="panel result-panel" aria-label="${generation ? '数据预览' : '运行结果'}">
-    <div class="section-heading"><div><h2>${generation ? '数据预览' : '运行结果'}</h2><p role="status">${rows.length} 行${rows.length > shown.length ? ` · 预览前 ${shown.length} 行` : ''}</p></div>
+    <div class="section-heading"><div><h2>${generation ? '数据预览' : '运行结果'}</h2><p role="status">${columns.length ? `${rows.length} 行${rows.length > shown.length ? ` · 预览前 ${shown.length} 行` : ''}` : '已生成'}</p></div>
       <div class="actions">${result.preview ? `<button type="button" data-action="download-preview">下载${result.preview.type === 'audio/wav' ? '音频' : '图像'}</button>` : ''}${columns.length ? `<button data-action="download" ${rows.length ? '' : 'disabled'}>下载 CSV</button>` : ''}${generation ? `<button class="primary" data-action="transfer" ${rows.length ? '' : 'disabled'}>在任务中使用</button>` : ''}</div></div>
     ${!generation && scoreColumn[task.result_type] ? `<button class="sort" data-action="sort">按${labels[scoreColumn[task.result_type]]}从高到低排序</button>` : ''}
     ${!generation ? scatter(task, result) : ''}
@@ -121,6 +124,7 @@ function samplePanel(dataset) {
     <div class="sample-grid">${dataset.samples.map((sample, index) => `<article class="sample">
       ${sample.data ? previewMarkup(sample, `样本 ${index + 1}`) : `<p class="sample-text">${escapeHTML(Object.values(sample.fields).join('\n'))}</p>`}
       <p>${escapeHTML(sample.target.label === undefined ? sample.target.objects ? `${sample.target.objects.length} 个物体` : sample.name : `标签 ${sample.target.label}`)}</p>
+      ${sample.target.reference || sample.target.transcript ? `<p class="hint">参考内容　${escapeHTML(sample.target.reference || sample.target.transcript)}</p>` : ''}
       <button data-action="sample" data-index="${index}">在任务中使用</button>
     </article>`).join('')}</div></section>`;
 }
@@ -159,28 +163,34 @@ function taskPage(task) {
 }
 
 function mediaTaskPage(task) {
-  const {model, busy, error, info, media, fields, result} = state.get(task.id);
+  const {model, busy, error, info, media, fields, result, tab, csv} = state.get(task.id);
   const selected = task.models.find(item => item.id === model);
   const isText = task.input_type === 'text';
   const isImage = task.input_type === 'image';
   const title = isImage ? '选择图片' : '选择 WAV 音频';
+  const isBatch = task.batch_limit > 0 && tab === 'csv';
   return `<header class="topline"><a href="#home">任务目录</a><span>${escapeHTML(task.title)}</span></header>
     <div class="page-heading">${icon(task)}<div><h1>${escapeHTML(task.title)}</h1><p>${escapeHTML(task.summary)}</p></div></div>
     <section class="panel"><div class="section-heading"><h2>准备数据</h2><a class="button" href="#data/${task.id}">生成数据</a></div>
       ${modelPicker(task, model, busy)}<p class="hint">${escapeHTML(task.input_hint)}</p>
-      ${selected.has_weights ? '' : notice(`本机还未准备这个模型的权重。${selected.asset_key ? `按 README 安装可选依赖，再下载 ${selected.asset_key} 并刷新。` : '请确认仓库中的权重文件完整。'}`)}
-      <form id="predict-form" class="media-form">${isText ? task.fields.map(([name, label]) => `<label class="csv-label" for="text-${name}">${escapeHTML(label)}</label><textarea id="text-${name}" name="${name}" rows="4" maxlength="4000" ${busy ? 'disabled' : ''} required>${escapeHTML(fields[name] || '')}</textarea>`).join('') :
+      ${selected.has_weights ? '' : notice(`本机还未准备这个模型的权重。${selected.asset_key ? `按 README 安装可选依赖，运行 python -m dl_workbench.download_models ${selected.asset_key} 后刷新。` : '请确认仓库中的权重文件完整。'}`)}
+      ${task.batch_limit ? `<div class="tabs" aria-label="数据输入方式"><button type="button" data-action="manual" aria-pressed="${!isBatch}" ${busy ? 'disabled' : ''}>填写一条</button><button type="button" data-action="csv" aria-pressed="${isBatch}" ${busy ? 'disabled' : ''}>批量 CSV</button></div>` : ''}
+      <form id="predict-form" class="media-form">${isBatch ? `<label class="csv-label" for="csv-input">上传或粘贴 CSV</label><p class="hint">必需列 text。每次最多 ${task.batch_limit} 行。</p><textarea id="csv-input" name="csv" rows="5" placeholder="text" ${busy ? 'disabled' : ''} required>${escapeHTML(csv)}</textarea><label class="file-label">选择 CSV 文件 <input type="file" id="csv-file" accept=".csv,text/csv" ${busy ? 'disabled' : ''}></label>` : isText ? task.fields.map(([name, label]) => `<label class="csv-label" for="text-${name}">${escapeHTML(label)}</label><textarea id="text-${name}" name="${name}" rows="4" maxlength="${name === 'question' ? 300 : task.id === 'speech' ? 500 : 4000}" ${busy ? 'disabled' : ''} required>${escapeHTML(fields[name] || '')}</textarea>`).join('') :
         `<label class="file-label">${title} <input type="file" id="media-file" accept="${isImage ? '.png,.jpg,.jpeg,image/png,image/jpeg' : '.wav,audio/wav'}" ${busy ? 'disabled' : ''}></label>${media ? `<div class="media-input">${previewMarkup(media, '当前输入')}<p class="hint">${escapeHTML(media.name)}</p></div>` : ''}`}
-        <div class="actions"><button type="submit" class="primary" ${busy || !selected.has_weights || (!isText && !media) ? 'disabled' : ''}>${busy === 'predict' ? '正在运行…' : '运行模型'}</button><button type="button" data-action="example" ${busy ? 'disabled' : ''}>${busy === 'example' ? '正在加载…' : '加载示例'}</button></div>
+        <div class="actions"><button type="submit" class="primary" ${busy || !selected.has_weights || (!isText && !media) ? 'disabled' : ''}>${busy === 'predict' ? '正在运行…' : '运行模型'}</button><button type="button" data-action="example" ${busy ? 'disabled' : ''}>${busy === 'example' ? '正在加载…' : '加载示例'}</button>${isBatch ? `<button type="button" data-action="template" ${busy ? 'disabled' : ''}>下载 CSV 模板</button>` : ''}</div>
       </form>${notice(error, 'alert')}${notice(info)}</section>${resultPanel(result, task, false)}`;
 }
 
 function dataPage(task) {
   const current = state.get(task.id);
   const {parameters, model, busy, generated, generationError} = current;
+  const options = Object.entries(catalog.groups).map(([group, label]) => {
+    const groupTasks = catalog.tasks.filter(item => item.group === group);
+    return groupTasks.length ? `<optgroup label="${escapeHTML(label)}">${groupTasks.map(item => `<option value="${item.id}" ${task.id === item.id ? 'selected' : ''}>${escapeHTML(item.title)}</option>`).join('')}</optgroup>` : '';
+  }).join('');
   return `<header class="topline"><a href="#home">任务目录</a><span>数据生成</span></header>
     <div class="page-heading"><span class="task-icon dimensionality" aria-hidden="true">▤</span><div><h1>生成合成数据</h1><p>选择任务，生成一份可预览、下载或直接运行的示例数据。</p></div></div>
-    <section class="panel"><h2>生成设置</h2><label class="task-picker" for="data-task">任务类型<select id="data-task">${catalog.tasks.map(item => `<option value="${item.id}" ${task.id === item.id ? 'selected' : ''}>${escapeHTML(item.title)}</option>`).join('')}</select></label>
+    <section class="panel"><h2>生成设置</h2><label class="task-picker" for="data-task">任务类型<select id="data-task">${options}</select></label>
     ${modelPicker(task, model, busy)}<form id="generate-form"><div class="fields">${task.parameters.map(parameter => `<label>${escapeHTML(parameter.label)}<input type="number" name="${parameter.key}" min="${parameter.minimum}" max="${parameter.maximum}" step="${parameter.step}" value="${escapeHTML(parameters[parameter.key])}" required ${busy ? 'disabled' : ''}></label>`).join('')}</div>
     <p class="hint">相同设置和随机种子可以复现数据。</p><button class="primary" type="submit" ${busy ? 'disabled' : ''}>${busy === 'generate' ? '正在生成…' : '生成数据'}</button></form>${notice(generationError, 'alert')}</section>${resultPanel(generated, task, true)}`;
 }
@@ -211,6 +221,7 @@ function downloadBase64(filename, type, data) {
 function selectSample(current, sample) {
   current.media = sample.data ? sample : null;
   current.fields = {...sample.fields};
+  current.tab = 'manual';
   current.result = null;
   current.error = '';
   current.info = '已加载示例。点击「运行模型」查看结果。';
@@ -242,13 +253,16 @@ async function run(task, action) {
   try {
     if (action === 'predict') {
       let input;
-      if (task.input_type === 'text') input = current.fields;
+      if (task.input_type === 'text') input = task.batch_limit && tab === 'csv' ? {csv} : current.fields;
       else if (['image', 'audio'].includes(task.input_type)) input = {[task.input_type]: current.media?.data || ''};
       else input = {csv: tab === 'csv' ? csv : toCSV(task.columns, [task.columns.map(column => manual[column])])};
       current.result = await request(task, 'predict', {model, ...input});
     } else if (action === 'example') {
       const generated = await request(task, 'generate', {model, parameters: task.dataset_type === 'samples' ? {samples: 1} : {}});
-      if (generated.samples) selectSample(current, generated.samples[0]);
+      if (generated.samples && task.batch_limit && tab === 'csv') {
+        current.csv = toCSV(['text'], generated.samples.map(sample => [sample.fields.text]));
+        current.info = '已加载示例。点击「运行模型」查看结果。';
+      } else if (generated.samples) selectSample(current, generated.samples[0]);
       else {
         const n = Math.min(12, generated.rows.length);
         const rows = task.id === 'anomaly' ? [...generated.rows.slice(0, 8), ...generated.rows.slice(-4)] :
@@ -358,7 +372,7 @@ app.addEventListener('click', event => {
   const current = state.get(task.id);
   const action = button.dataset.action;
   if (action === 'example') run(task, 'example');
-  if (action === 'template') download(`${task.id}-template.csv`, toCSV(task.columns, []));
+  if (action === 'template') download(`${task.id}-template.csv`, toCSV(task.batch_limit ? ['text'] : task.columns, []));
   if (action === 'download') {
     const result = page === 'data' ? current.generated : current.result;
     const safeRows = result.rows.map(row => row.map(value => typeof value === 'string' && /^\s*[=+\-@]/.test(value) ? `'${value}` : value));

@@ -7,6 +7,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from .language_tasks import ModelUnavailable
 from .tasks import GROUPS, INPUT_TYPES, InputError, MAX_ROWS, TASKS, catalog, generate, model_for, predict_request
 
 
@@ -85,6 +86,8 @@ class Handler(BaseHTTPRequestHandler):
         except ModuleNotFoundError as error:
             logging.exception("Missing dependency")
             self.json({"error": f"缺少 Python 依赖 {error.name}。请先安装工作台依赖。"}, HTTPStatus.SERVICE_UNAVAILABLE)
+        except ModelUnavailable as error:
+            self.json({"error": str(error)}, HTTPStatus.SERVICE_UNAVAILABLE)
         except FileNotFoundError:
             logging.exception("Missing model file")
             self.json({"error": "找不到本地模型权重。请确认项目目录完整。"}, HTTPStatus.SERVICE_UNAVAILABLE)

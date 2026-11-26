@@ -23,4 +23,5 @@ def model_directory(key):
 
 def available(key):
     path = model_directory(key)
-    return (path / "config.json").is_file() and (path / ".ready").is_file()
+    return ((path / "config.json").is_file() and (path / ".ready").is_file()
+            and ((path / "pytorch_model.bin").is_file() or any(path.glob("*.safetensors"))))

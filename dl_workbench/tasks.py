@@ -8,6 +8,7 @@ from functools import lru_cache
 from pathlib import Path
 from threading import Lock
 
+from .language_tasks import audio_predict, sample_dataset, text_predict
 from .media import InputError
 from .model_assets import available
 from .vision_tasks import digit_predict, image_dataset, scene_predict
@@ -84,6 +85,7 @@ class Task:
     request_predict: Callable | None = None
     dataset_type: str = "table"
     fields: tuple[tuple[str, str], ...] = ()
+    batch_limit: int = 0
 
     @property
     def result_columns(self):
@@ -217,6 +219,18 @@ IMAGES = Parameter("samples", "图片数", 6, 1, 12)
 DIGITS = (IMAGES, Parameter("digit", "数字（−1 为随机）", -1, -1, 9), SEED)
 SCENES = (IMAGES, Parameter("objects", "每图物体数", 4, 1, 9), SEED)
 BOX_FIELDS = ("instance", "class_name", "probability", "x_min", "y_min", "x_max", "y_max")
+TEXT_SAMPLES = (Parameter("samples", "文本条数", 6, 1, 12), SEED)
+AUDIO_SAMPLES = (Parameter("samples", "音频条数", 3, 1, 6), SEED)
+
+
+def language_task(key, title, method, summary, hint, output, group, *, fields=(("text", "英文文本"),),
+                  input_type="text", result_type="table"):
+    model = Model("default", method, "", "", None, asset_key=key)
+    audio = input_type == "audio"
+    return Task(key, title, method, summary, hint, (), output, (), (model,), AUDIO_SAMPLES if audio else TEXT_SAMPLES,
+                None, sample_dataset(key), group=group, input_type=input_type, result_type=result_type,
+                request_predict=audio_predict if audio else text_predict, dataset_type="samples", fields=() if audio else fields,
+                batch_limit=64 if key == "sentiment" else 0)
 
 
 TASKS = {task.id: task for task in (
@@ -300,6 +314,30 @@ TASKS = {task.id: task for task in (
          ("user_id", "k"), ("rank", "item_id", "predicted_rating"), ("user_id", "k"), (RATINGS,),
          (Parameter("samples", "用户数", 12, 1, 50), SEED), top_items, rank_data, group="recommend",
          integer_ranges=(("user_id", 0, 49), ("k", 1, 10)), expands_rows=True),
+    language_task("sentiment", "文本分类", "DistilBERT", "判断英文评论的情感倾向。",
+                  "粘贴一段英文评论，也可以上传带 text 列的 CSV 进行批量分类。结果给出正向和负向概率。",
+                  ("class_name", "probability"), "classify"),
+    language_task("entities", "命名实体识别", "DistilBERT NER", "从英文段落中提取人物、机构、地点等实体。",
+                  "粘贴英文段落。结果显示原文片段、类别和字符位置，结束位置不含端点。",
+                  ("entity", "entity_type", "start", "end", "probability"), "understand"),
+    language_task("translation", "机器翻译", "MarianMT", "将英文翻译为简体中文。",
+                  "输入一段简短英文。适合句子或短段落。", ("translation",), "transform"),
+    language_task("summary", "文本摘要", "FLAN-T5", "将英文段落浓缩成一两句话。",
+                  "输入一段英文正文。模型根据提供的文本生成英文摘要。", ("summary",), "transform"),
+    language_task("question", "阅读理解问答", "DistilBERT SQuAD", "从给定英文段落中找出问题的答案。",
+                  "填写参考段落和一个答案能在段落中找到的英文问题。", ("answer", "start", "end", "probability"),
+                  "understand", fields=(("context", "英文参考段落"), ("question", "英文问题"))),
+    language_task("generation", "文本生成", "SmolLM2 135M", "根据英文提示生成一段短文本。",
+                  "使用英文给出明确指令，例如写三句简短介绍。", ("generated_text",), "transform",
+                  fields=(("text", "英文提示"),)),
+    language_task("keywords", "音频分类", "Wav2Vec2", "识别音频中的英文命令词。",
+                  "上传最多 3 秒的 PCM WAV，建议只含一个命令词。生成语音样本需要 speech 权重。",
+                  ("class_name", "probability"), "classify", input_type="audio"),
+    language_task("transcription", "语音识别", "Whisper Tiny", "把英文语音转成文本。",
+                  "上传最长 30 秒的 PCM WAV。生成示例语音需要 speech 权重。",
+                  ("transcript",), "understand", input_type="audio"),
+    language_task("speech", "语音合成", "MMS-TTS", "把英文文本合成为可播放的 WAV。",
+                  "输入最多 500 个字符的英文。使用模型内置音色。", (), "transform", result_type="audio-preview"),
 )}
 
 
@@ -316,7 +354,7 @@ def catalog():
     return [{
         "id": task.id, "title": task.title, "method": task.method,
         "group": task.group, "input_type": task.input_type, "result_type": task.result_type,
-        "dataset_type": task.dataset_type, "fields": task.fields,
+        "dataset_type": task.dataset_type, "fields": task.fields, "batch_limit": task.batch_limit,
         "summary": task.summary, "input_hint": task.input_hint, "columns": task.columns,
         "output": task.output, "result_columns": task.result_columns, "dataset": task.dataset,
         "integer_ranges": {column: [low, high] for column, low, high in task.integer_ranges},
