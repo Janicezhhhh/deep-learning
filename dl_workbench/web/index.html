@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="使用本地模型运行机器学习任务，生成和下载配套的合成数据。">
+  <title>模型工坊 · 本地任务工作台</title>
+  <link rel="stylesheet" href="/app.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <div class="shell">
+    <aside class="rail">
+      <a class="brand" href="#home"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span><span>模型工坊<small>本地任务工作台</small></span></a>
+      <nav aria-label="工作台导航">
+        <a href="#home" id="nav-home"><span aria-hidden="true">▦</span>任务目录</a>
+        <a href="#data" id="nav-data"><span aria-hidden="true">▤</span>数据生成</a>
+        <p class="nav-label">任务</p>
+        <div id="task-nav"></div>
+      </nav>
+      <div class="rail-foot"><span class="local-dot"></span>仅本机运行</div>
+    </aside>
+    <main id="app" tabindex="-1"><p class="message" role="status">正在读取本地任务目录…</p></main>
+  </div>
+</body>
+</html>
