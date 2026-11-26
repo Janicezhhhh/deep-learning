@@ -186,7 +186,7 @@ function taskPage(task) {
 }
 
 function mediaTaskPage(task) {
-  const {model, busy, error, info, media, fields, result, tab, csv} = state.get(task.id);
+  const {model, busy, error, info, media, fields, result, tab, csv, predictParameters} = state.get(task.id);
   const selected = task.models.find(item => item.id === model);
   const isText = task.input_type === 'text';
   const isImage = task.input_type === 'image';
@@ -200,8 +200,17 @@ function mediaTaskPage(task) {
       ${task.batch_limit ? `<div class="tabs" aria-label="数据输入方式"><button type="button" data-action="manual" aria-pressed="${!isBatch}" ${busy ? 'disabled' : ''}>填写一条</button><button type="button" data-action="csv" aria-pressed="${isBatch}" ${busy ? 'disabled' : ''}>批量 CSV</button></div>` : ''}
       <form id="predict-form" class="media-form">${isBatch ? `<label class="csv-label" for="csv-input">上传或粘贴 CSV</label><p class="hint">必需列 text。每次最多 ${task.batch_limit} 行。</p><textarea id="csv-input" name="csv" rows="5" placeholder="text" ${busy ? 'disabled' : ''} required>${escapeHTML(csv)}</textarea><label class="file-label">选择 CSV 文件 <input type="file" id="csv-file" accept=".csv,text/csv" ${busy ? 'disabled' : ''}></label>` : isText ? task.fields.map(([name, label]) => `<label class="csv-label" for="text-${name}">${escapeHTML(label)}</label><textarea id="text-${name}" name="${name}" rows="4" maxlength="${name === 'question' ? 300 : task.id === 'speech' ? 500 : 4000}" ${busy ? 'disabled' : ''} required>${escapeHTML(fields[name] || '')}</textarea>`).join('') :
         `<label class="file-label">${title} <input type="file" id="media-file" accept="${isImage ? '.png,.jpg,.jpeg,image/png,image/jpeg' : '.wav,audio/wav'}" ${busy ? 'disabled' : ''}></label>${media ? `<div class="media-input">${previewMarkup(media, '当前输入')}<p class="hint">${escapeHTML(media.name)}</p></div>` : ''}`}
+        ${task.predict_parameters.length ? `<div class="fields">${parameterInputs(task.predict_parameters, predictParameters, busy)}</div>` : ''}
         <div class="actions"><button type="submit" class="primary" ${busy || !selected.has_weights || (!isText && !media) ? 'disabled' : ''}>${busy === 'predict' ? '正在运行…' : '运行模型'}</button><button type="button" data-action="example" ${busy ? 'disabled' : ''}>${busy === 'example' ? '正在加载…' : '加载示例'}</button>${isBatch ? `<button type="button" data-action="template" ${busy ? 'disabled' : ''}>下载 CSV 模板</button>` : ''}</div>
       </form>${notice(error, 'alert')}${notice(info)}</section>${resultPanel(result, task, false)}`;
+}
+
+function parameterInputs(definitions, values, busy) {
+  return definitions.map(parameter => `<label>${escapeHTML(parameter.label)}<input type="number" name="${parameter.key}" min="${parameter.minimum}" max="${parameter.maximum}" step="${parameter.step}" value="${escapeHTML(values[parameter.key])}" required ${busy ? 'disabled' : ''}>${parameter.description ? `<small class="hint">${escapeHTML(parameter.description)}</small>` : ''}</label>`).join('');
+}
+
+function numericSettings(values) {
+  return Object.fromEntries(Object.entries(values).map(([key, value]) => [key, Number(value)]));
 }
 
 function dataPage(task) {
@@ -214,7 +223,7 @@ function dataPage(task) {
   return `<header class="topline"><a href="#home">任务目录</a><span>数据生成</span></header>
     <div class="page-heading"><span class="task-icon dimensionality" aria-hidden="true">▤</span><div><h1>生成合成数据</h1><p>选择任务，生成一份可预览、下载或直接运行的示例数据。</p></div></div>
     <section class="panel"><h2>生成设置</h2><label class="task-picker" for="data-task">任务类型<select id="data-task">${options}</select></label>
-    ${modelPicker(task, model, busy)}<form id="generate-form"><div class="fields">${task.parameters.map(parameter => `<label>${escapeHTML(parameter.label)}<input type="number" name="${parameter.key}" min="${parameter.minimum}" max="${parameter.maximum}" step="${parameter.step}" value="${escapeHTML(parameters[parameter.key])}" required ${busy ? 'disabled' : ''}></label>`).join('')}</div>
+    ${modelPicker(task, model, busy)}<form id="generate-form"><div class="fields">${parameterInputs(task.parameters, parameters, busy)}</div>
     <p class="hint">相同设置和随机种子可以复现数据。</p><button class="primary" type="submit" ${busy ? 'disabled' : ''}>${busy === 'generate' ? '正在生成…' : '生成数据'}</button></form>${notice(generationError, 'alert')}</section>${resultPanel(generated, task, true)}`;
 }
 
@@ -244,6 +253,7 @@ function downloadBase64(filename, type, data) {
 function selectSample(current, sample) {
   current.media = sample.data ? sample : null;
   current.fields = {...sample.fields};
+  if (sample.settings) Object.assign(current.predictParameters, sample.settings);
   current.tab = 'manual';
   current.result = null;
   current.error = '';
@@ -277,7 +287,7 @@ async function run(task, action) {
   try {
     if (action === 'predict') {
       let input;
-      if (task.input_type === 'text') input = task.batch_limit && tab === 'csv' ? {csv} : current.fields;
+      if (task.input_type === 'text') input = task.batch_limit && tab === 'csv' ? {csv} : {...current.fields, ...numericSettings(current.predictParameters)};
       else if (['image', 'audio'].includes(task.input_type)) {
         input = {[task.input_type]: current.media?.data || ''};
         if (task.input_type === 'image' && current.media?.target) {
@@ -302,7 +312,7 @@ async function run(task, action) {
         current.info = `已加载 ${rows.length} 条示例记录。点击「运行模型」查看结果。`;
       }
     } else {
-      current.generated = await request(task, 'generate', {model, parameters: Object.fromEntries(Object.entries(parameters).map(([key, value]) => [key, Number(value)]))});
+      current.generated = await request(task, 'generate', {model, parameters: numericSettings(parameters)});
     }
   } catch (error) {
     current[action === 'generate' ? 'generationError' : 'error'] = error.message || '请求失败，请检查本地服务是否正在运行。';
@@ -320,6 +330,7 @@ app.addEventListener('input', event => {
   if (target.closest('#generate-form')) current.parameters[target.name] = target.value;
   else if (target.id === 'csv-input') current.csv = target.value;
   else if (target.id?.startsWith('text-')) current.fields[target.name] = target.value;
+  else if (Object.hasOwn(current.predictParameters, target.name)) current.predictParameters[target.name] = target.value;
   else if (target.closest('#predict-form') && target.type === 'number') current.manual[target.name] = target.value;
 });
 
@@ -454,7 +465,8 @@ async function initialize() {
     dataTask = catalog.tasks[0];
     for (const task of catalog.tasks) {
       state.set(task.id, {model: task.models[0].id, tab: 'manual', csv: '', manual: {}, fields: {},
-        parameters: Object.fromEntries(task.parameters.map(parameter => [parameter.key, parameter.default]))});
+        parameters: Object.fromEntries(task.parameters.map(parameter => [parameter.key, parameter.default])),
+        predictParameters: Object.fromEntries(task.predict_parameters.map(parameter => [parameter.key, parameter.default]))});
     }
     taskNav.innerHTML = Object.entries(catalog.groups).map(([group, label]) => {
       const tasks = catalog.tasks.filter(task => task.group === group);

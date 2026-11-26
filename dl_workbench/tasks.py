@@ -9,7 +9,7 @@ from pathlib import Path
 from threading import Lock
 
 from .evaluation import REFERENCES, evaluate_table
-from .language_tasks import audio_predict, sample_dataset, text_predict
+from .language_tasks import SPEECH_NOISE_RANGE, SPEECH_SPEED_RANGE, audio_predict, sample_dataset, text_predict
 from .media import InputError
 from .model_assets import available
 from .vision_tasks import digit_predict, image_dataset, scene_predict
@@ -41,10 +41,19 @@ class Parameter:
     minimum: int
     maximum: int
     step: int = 1
+    description: str = ""
 
 
 ROWS = Parameter("samples", "样本行数", 120, 1, MAX_ROWS)
 SEED = Parameter("seed", "随机种子", 42, 0, 2**31 - 1)
+FEATURE_NOISE = Parameter("noise_percent", "特征扰动（%）", 0, 0, 200, description="0 为原始特征。提高扰动会保留原标签并改变输入。")
+BASE_NOISE = Parameter("noise_percent", "噪声倍率（%）", 100, 0, 300, description="100 为原始噪声，0 关闭随机扰动。")
+DISTANCE = Parameter("distance_percent", "类间距离倍率（%）", 100, 25, 200, description="数值越小，各类别的样本越容易重叠。")
+SERIES_CONTROLS = (
+    Parameter("trend_percent", "每十步趋势（%）", 0, -200, 200, description="相对于单位振幅，负值产生下行趋势。"),
+    Parameter("period_percent", "周期倍率（%）", 100, 50, 200, description="100 为原周期，200 表示周期加倍。"),
+    Parameter("jump_percent", "突变幅度（%）", 0, -200, 200, description="相对于单位振幅，在序列中途产生一次水平跳变。"),
+)
 
 
 @dataclass(frozen=True)
@@ -87,6 +96,7 @@ class Task:
     dataset_type: str = "table"
     fields: tuple[tuple[str, str], ...] = ()
     batch_limit: int = 0
+    predict_parameters: tuple[Parameter, ...] = ()
 
     @property
     def result_columns(self):
@@ -165,19 +175,40 @@ def top_items(torch, model, rows):
 
 
 def labeled(module, options):
-    x, y = module.make_data(options["samples"], options["seed"])
+    controls = {"noise_percent": options["noise_percent"]} if "noise_percent" in options else {}
+    x, y = module.make_data(options["samples"], options["seed"], **controls)
     return [features + [label] for features, label in zip(x.tolist(), y.flatten().tolist())]
 
 
-def numeric_generator(name, *args):
+def binary_data(module, options):
+    import torch
+
+    count, seed = options["samples"], options["seed"]
+    x, y = module.make_data(count, seed)
+    labels = y.flatten()
+    generator = torch.Generator().manual_seed(seed ^ 197)
+    if options["positive_percent"] != 50:
+        positives = round(count * options["positive_percent"] / 100)
+        requested = torch.zeros_like(labels)
+        requested[torch.randperm(count, generator=generator)[:positives]] = 1
+        x[requested != labels, 1] *= -1
+        labels = requested
+    if options["noise_percent"]:
+        x += (options["noise_percent"] / 100) * torch.randn(x.shape, generator=generator)
+    return [features + [label] for features, label in zip(x.tolist(), labels.tolist(), strict=True)]
+
+
+def numeric_generator(name, *args, controls=()):
     def generate_numeric(module, options):
-        x, y = getattr(module, name)(options["samples"], options["seed"], *args)
+        x, y = getattr(module, name)(options["samples"], options["seed"], *args,
+                                     **{parameter.key: options[parameter.key] for parameter in controls})
         return [features + outputs for features, outputs in zip(x.tolist(), y.reshape(len(x), -1).tolist(), strict=True)]
     return generate_numeric
 
 
 def cluster_data(module, options):
-    x, y, _ = module.make_data(options["samples"], options["seed"])
+    x, y, _ = module.make_data(options["samples"], options["seed"], noise_percent=options["noise_percent"],
+                               distance_percent=options["distance_percent"])
     return [features + [label] for features, label in zip(x.tolist(), y.tolist())]
 
 
@@ -191,7 +222,8 @@ def anomaly_data(module, options):
 
 
 def sequence_data(module, options):
-    x, y = module.make_sequence_data(options["samples"] + len(WINDOW) + 1, len(WINDOW), options["seed"])
+    x, y = module.make_sequence_data(options["samples"] + len(WINDOW) + 1, len(WINDOW), options["seed"],
+                                     **{parameter.key: options[parameter.key] for parameter in SERIES_CONTROLS})
     return [features + [label] for features, label in zip(x.tolist(), y.flatten().tolist())]
 
 
@@ -214,24 +246,35 @@ MULTIVARIATE = Model("default", "双变量 LSTM", "classic_tabular", "multivaria
 RATINGS = Model("default", "用户–物品评分模型", "recommendation_project", "recommendation_model.pth", "MatrixFactorization", (50, 30))
 HORIZONS = ("forecast_1", "forecast_2", "forecast_3")
 LABEL_COLUMNS = ("label_a", "label_b", "label_c")
+BINARY_CONTROLS = (Parameter("positive_percent", "类别 1 比例（%）", 50, 0, 100, description="50 保留原始抽样，其他值按指定比例分配。"), FEATURE_NOISE)
+MULTI_CONTROLS = (Parameter("class_zero_percent", "类别 0 抽样权重（%）", 33, 0, 100, description="剩余抽样权重均分给类别 1 和类别 2。"), BASE_NOISE, DISTANCE)
 DIGIT = Model("default", "手写数字 CNN", "classic_vision", "digit_cnn.pth", "DigitCNN")
 SHAPES = Model("default", "几何图形分割 CNN", "classic_vision", "shape_net.pth", "ShapeNet")
 IMAGES = Parameter("samples", "图片数", 6, 1, 12)
-DIGITS = (IMAGES, Parameter("digit", "数字（−1 为随机）", -1, -1, 9), SEED)
-SCENES = (IMAGES, Parameter("objects", "每图物体数", 4, 1, 9), SEED)
+IMAGE_VARIATIONS = (
+    Parameter("rotation_degrees", "额外旋转（°）", 0, -45, 45, description="正值逆时针，负值顺时针。旋转后整张图适配画布。"),
+    Parameter("size_percent", "物体大小倍率（%）", 100, 50, 130, description="100 为原尺寸。物体大小受画布限制。"),
+    Parameter("occlusion_percent", "遮挡比例（%）", 0, 0, 45, description="每个物体的前景像素被遮住的近似比例。"),
+)
+DIGITS = (IMAGES, Parameter("digit", "数字（−1 为随机）", -1, -1, 9), SEED, *IMAGE_VARIATIONS)
+SCENES = (IMAGES, Parameter("objects", "每图物体数", 4, 1, 9), SEED, *IMAGE_VARIATIONS)
 BOX_FIELDS = ("instance", "class_name", "probability", "x_min", "y_min", "x_max", "y_max")
 TEXT_SAMPLES = (Parameter("samples", "文本条数", 6, 1, 12), SEED)
-AUDIO_SAMPLES = (Parameter("samples", "音频条数", 3, 1, 6), SEED)
+AUDIO_VARIATIONS = (
+    Parameter("speed_percent", "语速倍率（%）", 100, *SPEECH_SPEED_RANGE, description="100 为正常语速。"),
+    Parameter("noise_percent", "背景噪声（%）", 0, *SPEECH_NOISE_RANGE, description="0 无附加噪声，100 表示噪声与语音的均方根幅度相当。"),
+)
+AUDIO_SAMPLES = (Parameter("samples", "音频条数", 3, 1, 6), SEED, *AUDIO_VARIATIONS)
 
 
 def language_task(key, title, method, summary, hint, output, group, *, fields=(("text", "英文文本"),),
                   input_type="text", result_type="table"):
     model = Model("default", method, "", "", None, asset_key=key)
     audio = input_type == "audio"
-    return Task(key, title, method, summary, hint, (), output, (), (model,), AUDIO_SAMPLES if audio else TEXT_SAMPLES,
+    return Task(key, title, method, summary, hint, (), output, (), (model,), AUDIO_SAMPLES if audio or key == "speech" else TEXT_SAMPLES,
                 None, sample_dataset(key), group=group, input_type=input_type, result_type=result_type,
                 request_predict=audio_predict if audio else text_predict, dataset_type="samples", fields=() if audio else fields,
-                batch_limit=64 if key == "sentiment" else 0)
+                batch_limit=64 if key == "sentiment" else 0, predict_parameters=AUDIO_VARIATIONS if key == "speech" else ())
 
 
 TASKS = {task.id: task for task in (
@@ -240,15 +283,17 @@ TASKS = {task.id: task for task in (
          FEATURES[:2], ("predicted_label", "probability_1"), FEATURES[:2] + ("label",), (
              Model("same-sign", "同号分类模型", "classification_project", "classification_model.pth", "ClassificationMLP"),
              Model("opposite-sign", "异号分类模型", "simple_dl_project", "model.pth", "SimpleMLP"),
-         ), (ROWS, SEED), classification, labeled, group="classify"),
+         ), (ROWS, SEED, *BINARY_CONTROLS), classification, binary_data, group="classify"),
     Task("multiclass", "表格多分类", "MLP", "从三个类别中为每条记录选一个类别。",
          "每行提供两个数值。示例模型识别三组数值样本，类别为 0、1 或 2。",
          FEATURES[:2], ("predicted_label", "probability_0", "probability_1", "probability_2"),
-         FEATURES[:2] + ("label",), (MULTI,), (ROWS, SEED), multiclass, numeric_generator("multiclass_data"), group="classify"),
+         FEATURES[:2] + ("label",), (MULTI,), (ROWS, SEED, *MULTI_CONTROLS), multiclass,
+         numeric_generator("multiclass_data", controls=MULTI_CONTROLS), group="classify"),
     Task("multilabel", "表格多标签分类", "MLP", "同一条记录可以同时获得多个标签。",
          "每行提供三个数值。模型独立评估 A、B、C 三种标签，概率达到 0.5 时标为 1。",
          FEATURES[:3], LABEL_COLUMNS + ("probability_a", "probability_b", "probability_c"),
-         FEATURES[:3] + LABEL_COLUMNS, (LABELS,), (ROWS, SEED), multilabel, numeric_generator("multilabel_data"), group="classify"),
+         FEATURES[:3] + LABEL_COLUMNS, (LABELS,), (ROWS, SEED, FEATURE_NOISE), multilabel,
+         numeric_generator("multilabel_data", controls=(FEATURE_NOISE,)), group="classify"),
     Task("digit", "手写数字识别", "CNN", "识别图片中的一个手写数字，查看 0–9 的类别概率。",
          "上传包含单个数字、背景干净的 PNG 或 JPEG。模型依据 MNIST 与合成数字训练。",
          (), ("predicted_label", "probability"), (), (DIGIT,), DIGITS, None, image_dataset("digit"),
@@ -269,12 +314,12 @@ TASKS = {task.id: task for task in (
          "每行提供三个数值特征。示例目标近似为 2×x1 − 1.5×x2 + 0.5×x3。",
          FEATURES[:3], ("prediction",), FEATURES[:3] + ("target",), (
              Model("default", "线性关系回归模型", "regression_project", "regression_model.pth", "RegressionMLP"),
-         ), (ROWS, SEED), regression, labeled, group="forecast"),
+         ), (ROWS, SEED, BASE_NOISE), regression, labeled, group="forecast"),
     Task("clustering", "数据聚类", "K-means", "根据已有聚类中心，把二维数据分到三组。",
          "每行提供两个数值。分组编号由模型决定，可能与生成数据中的标签顺序不同。",
          FEATURES[:2], ("cluster", "distance"), FEATURES[:2] + ("source_group",), (
              Model("default", "三个聚类中心", "clustering_project", "cluster_centers.pth", None),
-         ), (Parameter("samples", "样本行数", 120, 3, 1998, 3), SEED), clustering, cluster_data,
+         ), (Parameter("samples", "样本行数", 120, 3, 1998, 3), SEED, BASE_NOISE, DISTANCE), clustering, cluster_data,
          group="explore", result_type="cluster-scatter"),
     Task("dimensionality", "数据降维", "自编码器", "把四维特征压缩为两个坐标，便于查看分布。",
          "每行提供四个数值特征。结果包含二维坐标和四个重建值。",
@@ -291,19 +336,19 @@ TASKS = {task.id: task for task in (
          "每行提供按时间从早到晚排列的 10 个数值，对应 t1 到 t10。",
          WINDOW, ("next_value",), WINDOW + ("actual_next",), (
              Model("default", "单变量序列模型", "sequence_modeling_project", "sequence_model.pth", "LSTMModel"),
-         ), (ROWS, SEED), regression, sequence_data, group="forecast", input_type="series"),
+         ), (ROWS, SEED, *SERIES_CONTROLS), regression, sequence_data, group="forecast", input_type="series"),
     Task("multi-step", "多步序列预测", "LSTM", "根据最近 10 个值，一次预测接下来的 3 步。",
          "每行提供从早到晚的 10 个数值。权重基于带噪声的周期序列。",
-         WINDOW, HORIZONS, WINDOW + ("actual_1", "actual_2", "actual_3"), (MULTISTEP,), (ROWS, SEED),
-         regression, numeric_generator("forecast_data"), group="forecast", input_type="series"),
+         WINDOW, HORIZONS, WINDOW + ("actual_1", "actual_2", "actual_3"), (MULTISTEP,), (ROWS, SEED, *SERIES_CONTROLS),
+         regression, numeric_generator("forecast_data", controls=SERIES_CONTROLS), group="forecast", input_type="series"),
     Task("multi-variate", "多变量序列预测", "LSTM", "结合目标序列与辅助变量，预测目标的下一步。",
          "每行提供 10 个时间点，按 t1、aux1、t2、aux2 依次排列。辅助变量需要与目标时间对齐。",
-         PAIRED_WINDOW, ("next_value",), PAIRED_WINDOW + ("actual_next",), (MULTIVARIATE,), (ROWS, SEED),
-         regression, numeric_generator("forecast_data", 2, 1), group="forecast", input_type="series"),
+         PAIRED_WINDOW, ("next_value",), PAIRED_WINDOW + ("actual_next",), (MULTIVARIATE,), (ROWS, SEED, *SERIES_CONTROLS),
+         regression, numeric_generator("forecast_data", 2, 1, controls=SERIES_CONTROLS), group="forecast", input_type="series"),
     Task("series-anomaly", "时间序列异常检测", "LSTM", "比较下一步观测与预测，找出偏离趋势的点。",
          "每行提供 10 个历史值和待核查的观测值。预测偏差越大越值得核查。",
          WINDOW + ("observed",), ("next_value", "absolute_error"), WINDOW + ("observed", "is_injected_anomaly"),
-         (MULTISTEP,), (ROWS, SEED), forecast_error, numeric_generator("temporal_anomaly_data"),
+         (MULTISTEP,), (ROWS, SEED, *SERIES_CONTROLS), forecast_error, numeric_generator("temporal_anomaly_data", controls=SERIES_CONTROLS),
          group="explore", input_type="series", result_type="forecast-errors"),
     Task("recommendation", "推荐评分", "矩阵分解", "预测已有用户对已知物品的评分。",
          "每行提供一对已有编号。用户范围为 0–49，物品范围为 0–29。",
@@ -363,6 +408,7 @@ def catalog():
         "models": [{"id": m.id, "name": m.name, "has_weights": m.has_weights, "asset_key": m.asset_key}
                    for m in task.models],
         "parameters": [vars(parameter) for parameter in task.parameters],
+        "predict_parameters": [vars(parameter) for parameter in task.predict_parameters],
     } for task in TASKS.values()]
 
 

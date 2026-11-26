@@ -11,6 +11,8 @@ from .model_assets import available, model_directory
 
 
 RUNTIME_LOCK = Lock()
+SPEECH_SPEED_RANGE = (50, 180)
+SPEECH_NOISE_RANGE = (0, 100)
 MODELS = {
     "sentiment": ("AutoModelForSequenceClassification", "AutoTokenizer"),
     "entities": ("AutoModelForTokenClassification", "AutoTokenizer"),
@@ -143,7 +145,10 @@ def text_predict(key, payload):
         if key == "question":
             return table(("answer", "start", "end", "probability"), [answer_span(model, processor, question, text)])
         if key == "speech":
-            return {**table((), []), "preview": {"type": "audio/wav", "data": encode(speech_bytes(text, model, processor))}}
+            speed = audio_setting(payload, "speed_percent", 100, SPEECH_SPEED_RANGE, "语速")
+            noise = audio_setting(payload, "noise_percent", 0, SPEECH_NOISE_RANGE, "背景噪声")
+            data = speech_bytes(text, model, processor, speed_percent=speed, noise_percent=noise)
+            return {**table((), []), "preview": {"type": "audio/wav", "data": encode(data)}}
         if key == "summary":
             text = "Summarize the following text in one or two sentences: " + text
         if key == "generation" and processor.chat_template:
@@ -211,11 +216,30 @@ def audio_predict(key, payload):
         return table(("class_name", "probability"), rows)
 
 
-def speech_bytes(text, model, processor):
+def audio_setting(payload, key, default, bounds, label):
+    value = payload.get(key, default)
+    if type(value) is not int or not bounds[0] <= value <= bounds[1]:
+        raise InputError(f"{label}必须是 {bounds[0]}–{bounds[1]} 之间的整数。")
+    return value
+
+
+def speech_bytes(text, model, processor, *, speed_percent=100, noise_percent=0, noise_seed=0):
     import numpy as np
 
     inputs = processor(text, return_tensors="pt")
-    waveform = model(**inputs).waveform[0].float().numpy()
+    # The caller holds RUNTIME_LOCK while using the shared synthesis model.
+    original_rate = model.speaking_rate
+    try:
+        model.speaking_rate = original_rate * speed_percent / 100
+        waveform = model(**inputs).waveform[0].float().numpy()
+    finally:
+        model.speaking_rate = original_rate
+    if noise_percent and waveform.size:
+        rng = np.random.default_rng(noise_seed)
+        noise = rng.standard_normal(waveform.size, dtype=np.float32)
+        rms = np.sqrt(np.mean(waveform ** 2))
+        waveform = waveform + noise * (noise_percent / 100) * rms / np.sqrt(np.mean(noise ** 2))
+        waveform /= max(1, np.abs(waveform).max())
     pcm = (np.clip(waveform, -1, 1) * 32767).astype("<i2")
     output = io.BytesIO()
     with wave.open(output, "wb") as audio:
@@ -263,18 +287,21 @@ def sample_dataset(key):
     def generate(module, options):
         rng = Random(options["seed"])
         samples = []
-        if key in ("transcription", "keywords"):
+        if key in ("transcription", "keywords", "speech"):
             import torch
 
             with RUNTIME_LOCK, torch.inference_mode():
                 model, processor = runtime("speech")
                 with torch.random.fork_rng(devices=[]):
                     torch.random.default_generator.manual_seed(options["seed"])
+                    settings = {name: options[name] for name in ("speed_percent", "noise_percent")}
                     for index in range(options["samples"]):
                         fields, target = sample_text(key, rng)
-                        data = speech_bytes(fields["text"], model, processor)
+                        data = speech_bytes(fields["text"], model, processor, **settings,
+                                            noise_seed=options["seed"] + index)
                         samples.append(({"name": f"sample-{index + 1:02}.wav", "type": "audio/wav",
-                                         "data": encode(data), "target": {**target, "transcript": fields["text"]}}, data))
+                                         "data": encode(data), "target": {**target, "transcript": fields["text"]},
+                                         **({"fields": fields, "settings": settings} if key == "speech" else {})}, data))
             return {"samples": [sample for sample, _ in samples],
                     "archive": dataset_zip([(sample["name"], data) for sample, data in samples],
                                            [{"audio": sample["name"], **sample["target"]} for sample, _ in samples])}

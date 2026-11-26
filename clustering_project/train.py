@@ -3,13 +3,14 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 
 
-def make_data(n_samples: int = 300, seed: int = 42):
+def make_data(n_samples: int = 300, seed: int = 42, *, noise_percent=100, distance_percent=100):
     generator = torch.Generator().manual_seed(seed)
     centers = torch.tensor([[2.0, 2.0], [6.0, 6.0], [-4.0, 1.0]])
+    centers = centers.mean(dim=0) + (centers - centers.mean(dim=0)) * (distance_percent / 100) if distance_percent != 100 else centers
     points = []
     labels = []
     for i, center in enumerate(centers):
-        cluster = center + 0.7 * torch.randn((n_samples // 3, 2), generator=generator)
+        cluster = center + (0.7 * noise_percent / 100) * torch.randn((n_samples // 3, 2), generator=generator)
         points.append(cluster)
         labels.append(torch.full((n_samples // 3,), i, dtype=torch.long))
     x = torch.vstack(points)

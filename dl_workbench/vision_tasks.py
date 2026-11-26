@@ -215,6 +215,71 @@ def scene_predict(kind):
     return infer
 
 
+def rotate_image(image, degrees, fill, resampling):
+    if not degrees:
+        return image
+    rotated = image.rotate(degrees, resample=resampling, expand=True, fillcolor=fill)
+    return rotated.resize(image.size, resampling)
+
+
+def occluded_pixels(mask, percent):
+    import numpy as np
+
+    ys, xs = np.nonzero(mask)
+    count = min(max(0, len(ys) - 1), round(len(ys) * percent / 100))
+    if not count:
+        return ys[:0], xs[:0]
+    center = (ys.min() + ys.max()) / 2
+    selected = np.argsort(np.abs(ys - center), kind="stable")[:count]
+    return ys[selected], xs[selected]
+
+
+def digit_variation(image, options):
+    import numpy as np
+    from PIL import Image
+
+    size = options["size_percent"]
+    if size != 100:
+        glyph = image.crop(image.getbbox())
+        factor = min(size / 100, min(image.width / glyph.width, image.height / glyph.height))
+        glyph = glyph.resize(tuple(max(1, round(side * factor)) for side in glyph.size), Image.Resampling.BILINEAR)
+        image = Image.new("L", image.size)
+        image.paste(glyph, ((image.width - glyph.width) // 2, (image.height - glyph.height) // 2))
+    image = rotate_image(image, options["rotation_degrees"], 0, Image.Resampling.BILINEAR)
+    if options["occlusion_percent"]:
+        pixels = np.array(image)
+        ys, xs = occluded_pixels(pixels > 12, options["occlusion_percent"])
+        pixels[ys, xs] = 0
+        image = Image.fromarray(pixels)
+    return image
+
+
+def scene_variation(image, instances, objects, options):
+    import numpy as np
+    from PIL import Image
+
+    angle = options["rotation_degrees"]
+    background = image.getpixel((0, 0))
+    image = rotate_image(image, angle, background, Image.Resampling.BILINEAR)
+    instances = rotate_image(instances, angle, 0, Image.Resampling.NEAREST)
+    pixels = np.array(image)
+    instance_ids = np.array(instances)
+    class_ids = np.zeros_like(instance_ids)
+    visible_objects = []
+    for item in objects:
+        instance = item["instance"]
+        covered_y, covered_x = occluded_pixels(instance_ids == instance, options["occlusion_percent"])
+        instance_ids[covered_y, covered_x] = 0
+        pixels[covered_y, covered_x] = background
+        ys, xs = np.nonzero(instance_ids == instance)
+        if not len(ys):
+            continue
+        class_ids[ys, xs] = item["class_id"]
+        visible_objects.append({**item, "bbox_xyxy": [int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1],
+                                "visible_pixels": len(ys), "occluded_pixels": len(covered_y)})
+    return Image.fromarray(pixels), Image.fromarray(class_ids), Image.fromarray(instance_ids), visible_objects
+
+
 def image_dataset(kind):
     def generate(module, options):
         rng = Random(options["seed"])
@@ -225,10 +290,11 @@ def image_dataset(kind):
             reference_mask = None
             if kind == "digit":
                 label = (rng.randrange(10) if options["digit"] == -1 else options["digit"])
-                image = module.drawn_digit(label, rng)
+                image = digit_variation(module.drawn_digit(label, rng), options)
                 target["label"] = label
             else:
-                image, semantic, instances, objects = module.draw_scene(rng, options["objects"])
+                image, _, instances, objects = module.draw_scene(rng, options["objects"], options["size_percent"])
+                image, semantic, instances, objects = scene_variation(image, instances, objects, options)
                 target["objects"] = objects
                 if kind in ("semantic", "instance"):
                     mask = semantic if kind == "semantic" else instances

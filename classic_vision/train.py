@@ -61,7 +61,7 @@ def drawn_digit(label, rng):
                         translate=(rng.randint(-2, 2), rng.randint(-2, 2)))
 
 
-def draw_scene(rng, objects):
+def draw_scene(rng, objects, size_percent=100):
     level = rng.randint(8, 35)
     image = Image.new("RGB", (SIZE, SIZE), (level, level, level + 5))
     semantic = Image.new("L", (SIZE, SIZE))
@@ -70,9 +70,10 @@ def draw_scene(rng, objects):
     annotations = []
     for index, cell in enumerate(rng.sample(range(9), objects), 1):
         label = rng.randrange(1, 4)
-        x = (cell % 3) * 32 + rng.randint(2, 7)
-        y = (cell // 3) * 32 + rng.randint(2, 7)
-        side = rng.randint(15, 23)
+        left, top = rng.randint(2, 7), rng.randint(2, 7)
+        x = (cell % 3) * 32 + left
+        y = (cell // 3) * 32 + top
+        side = min(round(rng.randint(15, 23) * size_percent / 100), 30 - max(left, top))
         box = (x, y, x + side, y + side)
         points = [(x + side // 2, y), (x, y + side), (x + side, y + side)] if label == 3 else box
         method = ("ellipse", "rectangle", "polygon")[label - 1]

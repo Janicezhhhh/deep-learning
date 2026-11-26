@@ -5,11 +5,11 @@ from pathlib import Path
 from torch.utils.data import DataLoader, TensorDataset
 
 
-def make_data(n_samples: int = 500, seed: int = 42):
+def make_data(n_samples: int = 500, seed: int = 42, *, noise_percent=100):
     generator = torch.Generator().manual_seed(seed)
     x = torch.randn((n_samples, 3), generator=generator)
     weights = torch.tensor([2.0, -1.5, 0.5])
-    y = x @ weights + 0.7 * torch.randn(n_samples, generator=generator)
+    y = x @ weights + (0.7 * noise_percent / 100) * torch.randn(n_samples, generator=generator)
     y = y.unsqueeze(1)
     return x, y
 

@@ -30,29 +30,38 @@ class ForecastLSTM(nn.Module):
         return self.head(hidden[:, -1])
 
 
-def multiclass_data(count, seed):
+def multiclass_data(count, seed, *, class_zero_percent=33, noise_percent=100, distance_percent=100):
     generator = torch.Generator().manual_seed(seed)
-    centers = torch.tensor([[-2., -1.], [2., -1.], [0., 2.5]])
-    labels = torch.randint(3, (count,), generator=generator)
-    x = centers[labels] + .62 * torch.randn((count, 2), generator=generator)
+    centers = torch.tensor([[-2., -1.], [2., -1.], [0., 2.5]]) * (distance_percent / 100)
+    if class_zero_percent == 33:
+        labels = torch.randint(3, (count,), generator=generator)
+    else:
+        remaining = (100 - class_zero_percent) / 2
+        weights = torch.tensor([class_zero_percent, remaining, remaining])
+        labels = torch.multinomial(weights, count, replacement=True, generator=generator)
+    x = centers[labels] + (.62 * noise_percent / 100) * torch.randn((count, 2), generator=generator)
     return x, labels
 
 
-def multilabel_data(count, seed):
+def multilabel_data(count, seed, *, noise_percent=0):
     generator = torch.Generator().manual_seed(seed)
     x = torch.randn((count, 3), generator=generator)
     labels = torch.stack((x[:, 0] > 0, x[:, 1] > x[:, 2], x.sum(dim=1) > 0), dim=1)
+    if noise_percent:
+        x = x + (noise_percent / 100) * torch.randn(x.shape, generator=generator)
     return x, labels.float()
 
 
-def forecast_data(count, seed, features=1, steps=3):
+def forecast_data(count, seed, features=1, steps=3, *, trend_percent=0, period_percent=100, jump_percent=0):
     generator = torch.Generator().manual_seed(seed)
     phase = torch.rand((count, 1), generator=generator) * (2 * torch.pi)
     pace = .16 + .08 * torch.rand((count, 1), generator=generator)
-    time = phase + pace * torch.arange(10 + steps)
+    ticks = torch.arange(10 + steps)
+    time = phase + pace * (100 / period_percent) * ticks
     auxiliary = torch.cos(time)
     noise = .035 * torch.randn(time.shape, generator=generator)
     target = torch.sin(time) + noise
+    target = target + (trend_percent / 1000) * ticks + (jump_percent / 100) * (ticks >= 7)
     x = target[:, :10]
     if features == 2:
         target = target + .35 * auxiliary
@@ -60,8 +69,8 @@ def forecast_data(count, seed, features=1, steps=3):
     return x, target[:, 10:]
 
 
-def temporal_anomaly_data(count, seed):
-    rows, values = forecast_data(count, seed, steps=1)
+def temporal_anomaly_data(count, seed, **controls):
+    rows, values = forecast_data(count, seed, steps=1, **controls)
     generator = torch.Generator().manual_seed(seed ^ 42)
     labels = torch.rand((count, 1), generator=generator) < .2
     direction = torch.where(torch.rand((count, 1), generator=generator) < .5, -1, 1)
