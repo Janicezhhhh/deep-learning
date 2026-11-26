@@ -2,8 +2,6 @@ import base64
 import binascii
 import csv
 import io
-import json
-from zipfile import ZIP_DEFLATED, ZipFile
 
 
 class InputError(ValueError):
@@ -29,12 +27,3 @@ def table_csv(columns, rows):
     writer.writerow(columns)
     writer.writerows(rows)
     return output.getvalue().encode("utf-8-sig")
-
-
-def dataset_zip(files, annotations):
-    output = io.BytesIO()
-    with ZipFile(output, "w", ZIP_DEFLATED) as archive:
-        for name, data in files:
-            archive.writestr(name, data)
-        archive.writestr("annotations.json", json.dumps(annotations, ensure_ascii=False, indent=2).encode("utf-8"))
-    return encode(output.getvalue())

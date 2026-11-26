@@ -75,7 +75,7 @@ class Handler(BaseHTTPRequestHandler):
                 raise InputError("请求需要包含 JSON 对象。")
             model = model_for(task, body.get("model"))
             if action == "generate":
-                result = generate(task, model, body.get("parameters", {}))
+                result = generate(task, model, body.get("parameters", {}), body.get("test_percent", 0))
             else:
                 result = predict_request(task, model, body)
             self.json(result)

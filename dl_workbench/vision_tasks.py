@@ -2,8 +2,9 @@ import io
 from collections import deque
 from random import Random
 
+from .datasets import MediaDataset
 from .evaluation import metric
-from .media import InputError, binary_input, dataset_zip, encode
+from .media import InputError, binary_input, encode
 
 
 def png(image):
@@ -306,5 +307,6 @@ def image_dataset(kind):
             files.append((name, payload))
             samples.append({"name": name, "type": "image/png", "data": encode(payload), "target": target,
                             **({"reference_mask": reference_mask} if reference_mask else {})})
-        return {"samples": samples, "archive": dataset_zip(files, [{"image": s["name"], **s["target"]} for s in samples])}
+        annotations = [{"image": sample["name"], **sample["target"]} for sample in samples]
+        return MediaDataset(samples, files, annotations)
     return generate

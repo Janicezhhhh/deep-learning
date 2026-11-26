@@ -100,7 +100,8 @@ function resultPanel(result, task, generation) {
   const shown = visible.slice(0, 10);
   return `<section class="panel result-panel" aria-label="${generation ? '数据预览' : '运行结果'}">
     <div class="section-heading"><div><h2>${generation ? '数据预览' : '运行结果'}</h2><p role="status">${columns.length ? `${visible.length} 行${visible.length > shown.length ? ` · 预览前 ${shown.length} 行` : ''}` : '已生成'}</p></div>
-      <div class="actions">${result.preview ? `<button type="button" data-action="download-preview">下载${result.preview.type === 'audio/wav' ? '音频' : '图像'}</button>` : ''}${columns.length ? `<button data-action="download" ${rows.length ? '' : 'disabled'}>下载 CSV</button>` : ''}${generation ? `<button class="primary" data-action="transfer" ${rows.length ? '' : 'disabled'}>在任务中使用</button>` : ''}</div></div>
+      <div class="actions">${result.preview ? `<button type="button" data-action="download-preview">下载${result.preview.type === 'audio/wav' ? '音频' : '图像'}</button>` : ''}${columns.length ? `<button data-action="download" ${rows.length ? '' : 'disabled'}>下载 CSV</button>` : ''}${generation ? `<button data-action="download-dataset">下载数据集 ZIP</button><button class="primary" data-action="transfer" ${rows.length ? '' : 'disabled'}>在任务中使用</button>` : ''}</div></div>
+    ${generation ? datasetSummary(result.manifest) : ''}
     ${!generation && scoreColumn[task.result_type] ? `<button class="sort" data-action="sort">按${labels[scoreColumn[task.result_type]]}从高到低排序</button>` : ''}
     ${result.evaluation ? evaluationPanel(result.evaluation) : ''}
     ${matchColumn >= 0 ? `<button type="button" class="sort" data-action="errors-only" aria-pressed="${!!errorsOnly}">${errorsOnly ? '显示全部样本' : '只看预测错误'}</button>` : ''}
@@ -141,11 +142,19 @@ function previewMarkup(media, label) {
     `<img class="media-preview" alt="${label}" src="${src}">`;
 }
 
+const splitNames = {train: '训练集', test: '测试集'};
+
+function datasetSummary(manifest) {
+  const partitions = manifest.partitions.filter(partition => partition.name !== 'all');
+  return `<p class="hint dataset-summary">随机种子 ${manifest.seed}${partitions.map(partition => ` · ${splitNames[partition.name]} ${partition.record_count} 条`).join('')}</p>`;
+}
+
 function samplePanel(dataset) {
   return `<section class="panel result-panel" aria-label="数据预览"><div class="section-heading"><div><h2>数据预览</h2><p role="status">${dataset.samples.length} 条样本</p></div>
-    <button data-action="download-dataset">下载数据集 ZIP</button></div>
+    <button data-action="download-dataset">下载数据集 ZIP</button></div>${datasetSummary(dataset.manifest)}
     <div class="sample-grid">${dataset.samples.map((sample, index) => `<article class="sample">
       ${sample.data ? previewMarkup(sample, `样本 ${index + 1}`) : `<p class="sample-text">${escapeHTML(Object.values(sample.fields).join('\n'))}</p>`}
+      ${sample.split ? `<p class="hint">${splitNames[sample.split]}</p>` : ''}
       <p>${escapeHTML(sample.target.label === undefined ? sample.target.objects ? `${sample.target.objects.length} 个物体` : sample.name : `标签 ${sample.target.label}`)}</p>
       ${sample.target.reference || sample.target.transcript ? `<p class="hint">参考内容　${escapeHTML(sample.target.reference || sample.target.transcript)}</p>` : ''}
       <button data-action="sample" data-index="${index}">在任务中使用</button>
@@ -215,7 +224,7 @@ function numericSettings(values) {
 
 function dataPage(task) {
   const current = state.get(task.id);
-  const {parameters, model, busy, generated, generationError} = current;
+  const {parameters, model, busy, generated, generationError, splitPercent} = current;
   const options = Object.entries(catalog.groups).map(([group, label]) => {
     const groupTasks = catalog.tasks.filter(item => item.group === group);
     return groupTasks.length ? `<optgroup label="${escapeHTML(label)}">${groupTasks.map(item => `<option value="${item.id}" ${task.id === item.id ? 'selected' : ''}>${escapeHTML(item.title)}</option>`).join('')}</optgroup>` : '';
@@ -224,6 +233,7 @@ function dataPage(task) {
     <div class="page-heading"><span class="task-icon dimensionality" aria-hidden="true">▤</span><div><h1>生成合成数据</h1><p>选择任务，生成一份可预览、下载或直接运行的示例数据。</p></div></div>
     <section class="panel"><h2>生成设置</h2><label class="task-picker" for="data-task">任务类型<select id="data-task">${options}</select></label>
     ${modelPicker(task, model, busy)}<form id="generate-form"><div class="fields">${parameterInputs(task.parameters, parameters, busy)}</div>
+    ${task.supports_split ? `<label class="export-setting">测试集比例（%）<input name="test_percent" type="number" min="0" max="90" step="1" value="${escapeHTML(splitPercent)}" required ${busy ? 'disabled' : ''}><small class="hint">0 导出完整样本。设置比例后，训练集和测试集使用独立种子生成。</small></label>` : ''}
     <p class="hint">相同设置和随机种子可以复现数据。</p><button class="primary" type="submit" ${busy ? 'disabled' : ''}>${busy === 'generate' ? '正在生成…' : '生成数据'}</button></form>${notice(generationError, 'alert')}</section>${resultPanel(generated, task, true)}`;
 }
 
@@ -312,7 +322,7 @@ async function run(task, action) {
         current.info = `已加载 ${rows.length} 条示例记录。点击「运行模型」查看结果。`;
       }
     } else {
-      current.generated = await request(task, 'generate', {model, parameters: numericSettings(parameters)});
+      current.generated = await request(task, 'generate', {model, parameters: numericSettings(parameters), test_percent: Number(current.splitPercent)});
     }
   } catch (error) {
     current[action === 'generate' ? 'generationError' : 'error'] = error.message || '请求失败，请检查本地服务是否正在运行。';
@@ -327,7 +337,10 @@ app.addEventListener('input', event => {
   if (!task) return;
   const current = state.get(task.id);
   const {target} = event;
-  if (target.closest('#generate-form')) current.parameters[target.name] = target.value;
+  if (target.closest('#generate-form')) {
+    if (target.name === 'test_percent') current.splitPercent = target.value;
+    else current.parameters[target.name] = target.value;
+  }
   else if (target.id === 'csv-input') current.csv = target.value;
   else if (target.id?.startsWith('text-')) current.fields[target.name] = target.value;
   else if (Object.hasOwn(current.predictParameters, target.name)) current.predictParameters[target.name] = target.value;
@@ -464,7 +477,7 @@ async function initialize() {
     byId = new Map(catalog.tasks.map(task => [task.id, task]));
     dataTask = catalog.tasks[0];
     for (const task of catalog.tasks) {
-      state.set(task.id, {model: task.models[0].id, tab: 'manual', csv: '', manual: {}, fields: {},
+      state.set(task.id, {model: task.models[0].id, tab: 'manual', csv: '', manual: {}, fields: {}, splitPercent: 0,
         parameters: Object.fromEntries(task.parameters.map(parameter => [parameter.key, parameter.default])),
         predictParameters: Object.fromEntries(task.predict_parameters.map(parameter => [parameter.key, parameter.default]))});
     }

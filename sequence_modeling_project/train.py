@@ -6,9 +6,12 @@ from torch.utils.data import DataLoader, TensorDataset
 
 
 def make_sequence_data(length: int = 300, seq_len: int = 10, seed: int = 42, *, trend_percent=0,
-                       period_percent=100, jump_percent=0):
+                       period_percent=100, jump_percent=0, period_steps=None):
     generator = torch.Generator().manual_seed(seed)
     t = torch.linspace(0, 4 * 3.14159, length)
+    if period_steps is not None:
+        phase = torch.rand((), generator=generator) * (2 * torch.pi)
+        t = phase + torch.arange(length) * (2 * torch.pi / period_steps)
     data = torch.sin(t * (100 / period_percent)) + 0.1 * torch.randn(length, generator=generator)
     if trend_percent or jump_percent:
         ticks = torch.arange(length)

@@ -6,7 +6,8 @@ from functools import lru_cache
 from random import Random
 from threading import Lock
 
-from .media import InputError, binary_input, dataset_zip, encode, table_csv
+from .datasets import MediaDataset
+from .media import InputError, binary_input, encode, table_csv
 from .model_assets import available, model_directory
 
 
@@ -302,9 +303,8 @@ def sample_dataset(key):
                         samples.append(({"name": f"sample-{index + 1:02}.wav", "type": "audio/wav",
                                          "data": encode(data), "target": {**target, "transcript": fields["text"]},
                                          **({"fields": fields, "settings": settings} if key == "speech" else {})}, data))
-            return {"samples": [sample for sample, _ in samples],
-                    "archive": dataset_zip([(sample["name"], data) for sample, data in samples],
-                                           [{"audio": sample["name"], **sample["target"]} for sample, _ in samples])}
+            return MediaDataset([sample for sample, _ in samples], [(sample["name"], data) for sample, data in samples],
+                                [{"audio": sample["name"], **sample["target"]} for sample, _ in samples])
         for index in range(options["samples"]):
             fields, target = sample_text(key, rng)
             samples.append({"name": f"样本 {index + 1}", "fields": fields, "target": target})
@@ -312,5 +312,5 @@ def sample_dataset(key):
         rows = [[*(sample["fields"][column] for column in columns), json.dumps(sample["target"], ensure_ascii=False)]
                 for sample in samples]
         data = table_csv([*columns, "reference"], rows)
-        return {"samples": samples, "archive": dataset_zip([("samples.csv", data)], samples)}
+        return MediaDataset(samples, [("samples.csv", data)], samples)
     return generate

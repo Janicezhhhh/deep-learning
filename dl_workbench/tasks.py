@@ -8,6 +8,7 @@ from functools import lru_cache
 from pathlib import Path
 from threading import Lock
 
+from .datasets import export_dataset
 from .evaluation import REFERENCES, evaluate_table
 from .language_tasks import SPEECH_NOISE_RANGE, SPEECH_SPEED_RANGE, audio_predict, sample_dataset, text_predict
 from .media import InputError
@@ -101,6 +102,13 @@ class Task:
     @property
     def result_columns(self):
         return (("query",) if self.expands_rows else ()) + self.columns + self.output
+
+    @property
+    def split_parameter(self):
+        labeled_table = self.dataset_type == "table" and bool(set(self.dataset) - set(self.columns))
+        if labeled_table or self.input_type in ("image", "audio") or self.id == "speech":
+            return next((parameter for parameter in self.parameters if parameter.key == "samples"), None)
+        return None
 
 
 def module_for(model):
@@ -223,6 +231,7 @@ def anomaly_data(module, options):
 
 def sequence_data(module, options):
     x, y = module.make_sequence_data(options["samples"] + len(WINDOW) + 1, len(WINDOW), options["seed"],
+                                     period_steps=150,
                                      **{parameter.key: options[parameter.key] for parameter in SERIES_CONTROLS})
     return [features + [label] for features, label in zip(x.tolist(), y.flatten().tolist())]
 
@@ -408,11 +417,30 @@ def catalog():
         "models": [{"id": m.id, "name": m.name, "has_weights": m.has_weights, "asset_key": m.asset_key}
                    for m in task.models],
         "parameters": [vars(parameter) for parameter in task.parameters],
+        "supports_split": task.split_parameter is not None,
         "predict_parameters": [vars(parameter) for parameter in task.predict_parameters],
     } for task in TASKS.values()]
 
 
-def generate(task, model, raw):
+def generation_partitions(task, options, test_percent):
+    if type(test_percent) is not int or not 0 <= test_percent <= 90:
+        raise InputError("测试集比例必须是 0–90 之间的整数。")
+    if not test_percent:
+        return [("all", options)]
+    parameter = task.split_parameter
+    if parameter is None:
+        raise InputError("此任务采用独立的数据设置，当前仅可导出完整样本。")
+    count = options[parameter.key]
+    group_count = count // parameter.step
+    min_groups = math.ceil(parameter.minimum / parameter.step)
+    if group_count < min_groups * 2:
+        raise InputError(f"生成训练集和测试集至少需要 {min_groups * 2 * parameter.step} 个样本。")
+    test_count = min(group_count - min_groups, max(min_groups, round(group_count * test_percent / 100))) * parameter.step
+    return [("train", {**options, parameter.key: count - test_count}),
+            ("test", {**options, parameter.key: test_count, "seed": options["seed"] ^ 0x5BD1E995})]
+
+
+def generate(task, model, raw, test_percent=0):
     if not isinstance(raw, dict):
         raise InputError("生成参数需要按字段提供。")
     options = {}
@@ -423,10 +451,10 @@ def generate(task, model, raw):
             requirement = f"，且必须以 {parameter.minimum} 为起点按 {parameter.step} 递增" if parameter.step != 1 else ""
             raise InputError(f"{parameter.label}必须是 {parameter.minimum}–{parameter.maximum} 之间的整数{requirement}。")
         options[parameter.key] = value
-    data = task.generate(module_for(model) if model.module else None, options)
-    if task.dataset_type != "table":
-        return data
-    return {"columns": task.dataset, "rows": data}
+    partitions = generation_partitions(task, options, test_percent)
+    module = module_for(model) if model.module else None
+    batches = [(name, settings, task.generate(module, settings)) for name, settings in partitions]
+    return export_dataset(task, model, options, batches, test_percent)
 
 
 def read_csv(task, source):

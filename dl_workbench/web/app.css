@@ -110,6 +110,9 @@ tbody th { color: var(--muted); font-weight: 500; }
 .evaluation dt { color: var(--muted); font-size: .88rem; }
 .evaluation dd { margin: 1px 0 0; font-size: 1.2rem; font-weight: 700; }
 .wrong { color: #8e2519; background: #fff0ed; }
+.dataset-summary { margin-bottom: 12px; }
+.export-setting { display: grid; grid-template-columns: max-content minmax(70px, 100px); align-items: center; gap: 4px 12px; margin-bottom: 12px; }
+.export-setting .hint { grid-column: 1 / -1; }
 .media-form { margin-top: 17px; }
 .media-input { margin: 12px 0; }
 .media-preview { display: block; width: min(100%, 260px); height: 190px; object-fit: contain; background: #eaf0f7; border: 1px solid var(--line); border-radius: 8px; margin: 0 0 12px; }
