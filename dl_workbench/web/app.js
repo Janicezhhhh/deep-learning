@@ -7,7 +7,16 @@ const labels = {
   source_group: '生成分组', z1: '降维坐标 1', z2: '降维坐标 2', reconstruction_error: '重建误差',
   is_injected_anomaly: '注入异常', next_value: '下一步预测值', actual_next: '下一步真实值',
   user_id: '用户编号', item_id: '物品编号', predicted_rating: '预测评分', rating: '生成评分',
+  probability_0: '类别 0 概率', probability_2: '类别 2 概率', observed: '观测值', absolute_error: '预测偏差',
+  query: '输入行号', k: '推荐结果数', rank: '排名',
 };
+const scoreColumn = {'anomaly-scores': 'reconstruction_error', 'forecast-errors': 'absolute_error'};
+for (const [i, key] of ['a', 'b', 'c'].entries()) {
+  labels[`label_${key}`] = `标签 ${key.toUpperCase()}`;
+  labels[`probability_${key}`] = `标签 ${key.toUpperCase()} 概率`;
+  labels[`forecast_${i + 1}`] = `第 ${i + 1} 步预测`;
+  labels[`actual_${i + 1}`] = `第 ${i + 1} 步真实值`;
+}
 for (let i = 1; i <= 4; i++) labels[`reconstructed_x${i}`] = `重建特征 ${i}`;
 const state = new Map();
 let filter = '';
@@ -83,7 +92,7 @@ function resultPanel(result, task, generation) {
   return `<section class="panel result-panel" aria-label="${generation ? '数据预览' : '运行结果'}">
     <div class="section-heading"><div><h2>${generation ? '数据预览' : '运行结果'}</h2><p role="status">${rows.length} 行${rows.length > shown.length ? ` · 预览前 ${shown.length} 行` : ''}</p></div>
       <div class="actions"><button data-action="download" ${rows.length ? '' : 'disabled'}>下载 CSV</button>${generation ? `<button class="primary" data-action="transfer" ${rows.length ? '' : 'disabled'}>在任务中使用</button>` : ''}</div></div>
-    ${!generation && task.result_type === 'anomaly-scores' ? '<button class="sort" data-action="sort">按重建误差从高到低排序</button>' : ''}
+    ${!generation && scoreColumn[task.result_type] ? `<button class="sort" data-action="sort">按${labels[scoreColumn[task.result_type]]}从高到低排序</button>` : ''}
     ${!generation ? scatter(task, result) : ''}
     <div class="table-scroll" tabindex="0" role="region" aria-label="结果表格"><table><thead><tr><th scope="col">行</th>${columns.map(column => `<th scope="col" title="${escapeHTML(column)}">${escapeHTML(labels[column] || column)}</th>`).join('')}</tr></thead>
       <tbody>${shown.map((row, index) => `<tr><th scope="row">${index + 1}</th>${row.map(value => `<td title="${value}">${format(value)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>
@@ -118,7 +127,10 @@ function taskPage(task) {
       <div class="tabs" aria-label="数据输入方式"><button type="button" data-action="manual" aria-pressed="${tab === 'manual'}" ${busy ? 'disabled' : ''}>填写一条</button>
       <button type="button" data-action="csv" aria-pressed="${tab === 'csv'}" ${busy ? 'disabled' : ''}>批量 CSV</button></div>
       <form id="predict-form">
-        ${tab === 'manual' ? `<div class="fields">${task.columns.map(column => `<label>${labels[column] || column}<input name="${column}" type="number" step="any" value="${escapeHTML(manual[column] || '')}" required ${busy ? 'disabled' : ''}></label>`).join('')}</div>` :
+        ${tab === 'manual' ? `<div class="fields">${task.columns.map(column => {
+          const range = task.integer_ranges[column];
+          return `<label>${labels[column] || column}<input name="${column}" type="number" ${range ? `min="${range[0]}" max="${range[1]}" step="1"` : 'step="any"'} value="${escapeHTML(manual[column] || '')}" required ${busy ? 'disabled' : ''}></label>`;
+        }).join('')}</div>` :
           `<label class="csv-label" for="csv-input">上传或粘贴 CSV</label><p class="hint">必需列 ${task.columns.join('、')}。每次最多 ${catalog.max_rows} 行。</p><textarea id="csv-input" name="csv" rows="5" placeholder="${task.columns.join(',')}" ${busy ? 'disabled' : ''}>${escapeHTML(csv)}</textarea><label class="file-label">选择 CSV 文件 <input type="file" id="csv-file" accept=".csv,text/csv" ${busy ? 'disabled' : ''}></label>`}
         <div class="actions"><button class="primary" type="submit" ${busy ? 'disabled' : ''}>${busy === 'predict' ? '正在运行…' : '运行模型'}</button><button type="button" data-action="example" ${busy ? 'disabled' : ''}>${busy === 'example' ? '正在加载…' : '加载示例'}</button><button type="button" data-action="template" ${busy ? 'disabled' : ''}>下载 CSV 模板</button></div>
       </form>${notice(error, 'alert')}${notice(info)}</section>${resultPanel(result, task, false)}`;
@@ -271,7 +283,7 @@ app.addEventListener('click', event => {
     location.hash = task.id;
   }
   if (action === 'sort') {
-    const index = current.result.columns.indexOf('reconstruction_error');
+    const index = current.result.columns.indexOf(scoreColumn[task.result_type]);
     current.result.rows.sort((a, b) => b[index] - a[index]);
     render();
     document.querySelector('[data-action="sort"]')?.focus();

@@ -13,6 +13,8 @@ ROOT = Path(__file__).resolve().parent.parent
 MAX_ROWS = 2000
 FEATURES = ("x1", "x2", "x3", "x4")
 WINDOW = tuple(f"t{i}" for i in range(1, 11))
+PAIRED_WINDOW = tuple(f"{feature}{i}" for i in range(1, 11) for feature in ("t", "aux"))
+RATING_IDS = (("user_id", 0, 49), ("item_id", 0, 29))
 LOAD_LOCK = Lock()
 GROUPS = {
     "classify": "判断类别",
@@ -68,6 +70,12 @@ class Task:
     group: str = field(kw_only=True)
     input_type: str = "table"
     result_type: str = "table"
+    integer_ranges: tuple[tuple[str, int, int], ...] = ()
+    expands_rows: bool = False
+
+    @property
+    def result_columns(self):
+        return (("query",) if self.expands_rows else ()) + self.columns + self.output
 
 
 def module_for(model):
@@ -89,6 +97,21 @@ def load(model):
 def classification(torch, model, rows):
     probability = torch.sigmoid(model(rows)).flatten()
     return torch.column_stack((probability >= 0.5, probability)).tolist()
+
+
+def multiclass(torch, model, rows):
+    probability = model(rows).softmax(dim=1)
+    return torch.column_stack((probability.argmax(dim=1), probability)).tolist()
+
+
+def multilabel(torch, model, rows):
+    probability = model(rows).sigmoid()
+    return torch.cat((probability >= 0.5, probability), dim=1).tolist()
+
+
+def forecast_error(torch, model, rows):
+    prediction = model(rows[:, :10])[:, :1]
+    return torch.cat((prediction, (rows[:, 10:] - prediction).abs()), dim=1).tolist()
 
 
 def regression(torch, model, rows):
@@ -114,9 +137,28 @@ def recommendation(torch, model, rows):
     return model(rows[:, 0].long(), rows[:, 1].long()).unsqueeze(1).tolist()
 
 
+def top_items(torch, model, rows):
+    items = torch.arange(30)
+    user_ids = rows[:, 0].long()
+    ratings = model(user_ids.repeat_interleave(len(items)), items.repeat(len(rows))).reshape(len(rows), -1)
+    ranking = ratings.argsort(dim=1, descending=True, stable=True).tolist()
+    results = []
+    for row_number, ((user, k), ranked, scores) in enumerate(zip(rows.int().tolist(), ranking, ratings.tolist()), 1):
+        for rank, item in enumerate(ranked[:k], 1):
+            results.append([row_number, user, k, rank, item, scores[item]])
+    return results
+
+
 def labeled(module, options):
     x, y = module.make_data(options["samples"], options["seed"])
     return [features + [label] for features, label in zip(x.tolist(), y.flatten().tolist())]
+
+
+def numeric_generator(name, *args):
+    def generate_numeric(module, options):
+        x, y = getattr(module, name)(options["samples"], options["seed"], *args)
+        return [features + outputs for features, outputs in zip(x.tolist(), y.reshape(len(x), -1).tolist(), strict=True)]
+    return generate_numeric
 
 
 def cluster_data(module, options):
@@ -143,6 +185,22 @@ def rating_data(module, options):
     return [[u, i, int(matrix[u, i])] for u, i in mask.nonzero().tolist()]
 
 
+def rank_data(module, options):
+    from random import Random
+
+    rng = Random(options["seed"])
+    return [[user, 5] for user in rng.sample(range(50), options["samples"])]
+
+
+MULTI = Model("default", "三类别 MLP", "classic_tabular", "multiclass.pth", "MulticlassMLP")
+LABELS = Model("default", "独立标签 MLP", "classic_tabular", "multilabel.pth", "MultilabelMLP")
+MULTISTEP = Model("default", "三步序列 LSTM", "classic_tabular", "multistep.pth", "ForecastLSTM")
+MULTIVARIATE = Model("default", "双变量 LSTM", "classic_tabular", "multivariate.pth", "ForecastLSTM", (2, 1))
+RATINGS = Model("default", "用户–物品评分模型", "recommendation_project", "recommendation_model.pth", "MatrixFactorization", (50, 30))
+HORIZONS = ("forecast_1", "forecast_2", "forecast_3")
+LABEL_COLUMNS = ("label_a", "label_b", "label_c")
+
+
 TASKS = {task.id: task for task in (
     Task("classification", "二分类", "MLP", "根据两个特征，把记录分到两个类别。",
          "每行提供两个数值特征。两个示例分别把同号或异号判为类别 1。",
@@ -150,6 +208,14 @@ TASKS = {task.id: task for task in (
              Model("same-sign", "同号分类模型", "classification_project", "classification_model.pth", "ClassificationMLP"),
              Model("opposite-sign", "异号分类模型", "simple_dl_project", "model.pth", "SimpleMLP"),
          ), (ROWS, SEED), classification, labeled, group="classify"),
+    Task("multiclass", "表格多分类", "MLP", "从三个类别中为每条记录选一个类别。",
+         "每行提供两个数值。示例模型识别三组数值样本，类别为 0、1 或 2。",
+         FEATURES[:2], ("predicted_label", "probability_0", "probability_1", "probability_2"),
+         FEATURES[:2] + ("label",), (MULTI,), (ROWS, SEED), multiclass, numeric_generator("multiclass_data"), group="classify"),
+    Task("multilabel", "表格多标签分类", "MLP", "同一条记录可以同时获得多个标签。",
+         "每行提供三个数值。模型独立评估 A、B、C 三种标签，概率达到 0.5 时标为 1。",
+         FEATURES[:3], LABEL_COLUMNS + ("probability_a", "probability_b", "probability_c"),
+         FEATURES[:3] + LABEL_COLUMNS, (LABELS,), (ROWS, SEED), multilabel, numeric_generator("multilabel_data"), group="classify"),
     Task("regression", "数值回归", "MLP", "用三个数值特征预测一个连续数值。",
          "每行提供三个数值特征。示例目标近似为 2×x1 − 1.5×x2 + 0.5×x3。",
          FEATURES[:3], ("prediction",), FEATURES[:3] + ("target",), (
@@ -177,11 +243,29 @@ TASKS = {task.id: task for task in (
          WINDOW, ("next_value",), WINDOW + ("actual_next",), (
              Model("default", "单变量序列模型", "sequence_modeling_project", "sequence_model.pth", "LSTMModel"),
          ), (ROWS, SEED), regression, sequence_data, group="forecast", input_type="series"),
+    Task("multi-step", "多步序列预测", "LSTM", "根据最近 10 个值，一次预测接下来的 3 步。",
+         "每行提供从早到晚的 10 个数值。权重基于带噪声的周期序列。",
+         WINDOW, HORIZONS, WINDOW + ("actual_1", "actual_2", "actual_3"), (MULTISTEP,), (ROWS, SEED),
+         regression, numeric_generator("forecast_data"), group="forecast", input_type="series"),
+    Task("multi-variate", "多变量序列预测", "LSTM", "结合目标序列与辅助变量，预测目标的下一步。",
+         "每行提供 10 个时间点，按 t1、aux1、t2、aux2 依次排列。辅助变量需要与目标时间对齐。",
+         PAIRED_WINDOW, ("next_value",), PAIRED_WINDOW + ("actual_next",), (MULTIVARIATE,), (ROWS, SEED),
+         regression, numeric_generator("forecast_data", 2, 1), group="forecast", input_type="series"),
+    Task("series-anomaly", "时间序列异常检测", "LSTM", "比较下一步观测与预测，找出偏离趋势的点。",
+         "每行提供 10 个历史值和待核查的观测值。预测偏差越大越值得核查。",
+         WINDOW + ("observed",), ("next_value", "absolute_error"), WINDOW + ("observed", "is_injected_anomaly"),
+         (MULTISTEP,), (ROWS, SEED), forecast_error, numeric_generator("temporal_anomaly_data"),
+         group="explore", input_type="series", result_type="forecast-errors"),
     Task("recommendation", "推荐评分", "矩阵分解", "预测已有用户对已知物品的评分。",
          "每行提供一对已有编号。用户范围为 0–49，物品范围为 0–29。",
-         ("user_id", "item_id"), ("predicted_rating",), ("user_id", "item_id", "rating"), (
-             Model("default", "用户–物品评分模型", "recommendation_project", "recommendation_model.pth", "MatrixFactorization", (50, 30)),
-         ), (Parameter("density", "评分覆盖率（%）", 30, 1, 100), SEED), recommendation, rating_data, group="recommend"),
+         ("user_id", "item_id"), ("predicted_rating",), ("user_id", "item_id", "rating"), (RATINGS,),
+         (Parameter("density", "评分覆盖率（%）", 30, 1, 100), SEED), recommendation, rating_data,
+         group="recommend", integer_ranges=RATING_IDS),
+    Task("top-k", "Top-K 推荐", "矩阵分解", "为每位用户列出预测评分最高的物品。",
+         "输入用户编号 0–49 和想要的结果数 k（1–10）。候选为模型已知的 30 件物品。",
+         ("user_id", "k"), ("rank", "item_id", "predicted_rating"), ("user_id", "k"), (RATINGS,),
+         (Parameter("samples", "用户数", 12, 1, 50), SEED), top_items, rank_data, group="recommend",
+         integer_ranges=(("user_id", 0, 49), ("k", 1, 10)), expands_rows=True),
 )}
 
 
@@ -199,7 +283,8 @@ def catalog():
         "id": task.id, "title": task.title, "method": task.method,
         "group": task.group, "input_type": task.input_type, "result_type": task.result_type,
         "summary": task.summary, "input_hint": task.input_hint, "columns": task.columns,
-        "output": task.output, "dataset": task.dataset,
+        "output": task.output, "result_columns": task.result_columns, "dataset": task.dataset,
+        "integer_ranges": {column: [low, high] for column, low, high in task.integer_ranges},
         "models": [{"id": m.id, "name": m.name, "has_weights": (ROOT / m.module / m.weights).is_file()}
                    for m in task.models],
         "parameters": [vars(parameter) for parameter in task.parameters],
@@ -227,6 +312,7 @@ def read_csv(task, source):
     reader = csv.reader(io.StringIO(source.removeprefix("\ufeff")), strict=True)
     required = task.columns
     rows = []
+    integer_ranges = {column: (low, high) for column, low, high in task.integer_ranges}
     try:
         header = next(reader, None)
         if not header:
@@ -254,10 +340,10 @@ def read_csv(task, source):
                     raise InputError(f"CSV 第 {line} 行的 {column} 需要填写数值。") from None
                 if not math.isfinite(value) or abs(value) > 1e12:
                     raise InputError(f"CSV 第 {line} 行的 {column} 需要是绝对值不超过 1 万亿的有限数值。")
-                if task.id == "recommendation":
-                    maximum = 49 if column == "user_id" else 29
-                    if not value.is_integer() or not 0 <= value <= maximum:
-                        raise InputError(f"CSV 第 {line} 行的 {column} 需要是 0–{maximum} 之间的整数。")
+                if column in integer_ranges:
+                    low, high = integer_ranges[column]
+                    if not value.is_integer() or not low <= value <= high:
+                        raise InputError(f"CSV 第 {line} 行的 {column} 需要是 {low}–{high} 之间的整数。")
                 values.append(value)
             rows.append(values)
     except csv.Error as error:
@@ -277,4 +363,6 @@ def predict(task, model, source):
         predictions = task.predict(torch, network, torch.tensor(rows, dtype=torch.float32))
     if any(not math.isfinite(value) for row in predictions for value in row):
         raise InputError("模型返回了无效的数值。请检查输入范围或更换模型权重。")
-    return {"columns": task.columns + task.output, "rows": [x + y for x, y in zip(rows, predictions, strict=True)]}
+    if task.expands_rows:
+        return {"columns": task.result_columns, "rows": predictions}
+    return {"columns": task.result_columns, "rows": [x + y for x, y in zip(rows, predictions, strict=True)]}
