@@ -10,6 +10,7 @@ const labels = {
 };
 for (let i = 1; i <= 4; i++) labels[`reconstructed_x${i}`] = `重建特征 ${i}`;
 const state = new Map();
+let filter = '';
 let catalog;
 let byId;
 let dataTask;
@@ -50,6 +51,14 @@ function render() {
 
 function home() {
   const count = catalog.tasks.flatMap(task => task.models).filter(model => model.has_weights).length;
+  const visible = catalog.tasks.filter(task => !filter || task.input_type === filter);
+  const grouped = Object.entries(catalog.groups).map(([group, label]) => {
+    const tasks = visible.filter(task => task.group === group);
+    if (!tasks.length) return '';
+    return `<section class="task-group" aria-labelledby="group-${group}"><h3 id="group-${group}">${escapeHTML(label)}</h3><div class="task-grid">
+      ${tasks.map(task => `<a class="task-card" href="#${task.id}">${icon(task)}<span class="method">${escapeHTML(catalog.input_types[task.input_type])}</span><h4>${escapeHTML(task.title)}</h4><p>${escapeHTML(task.summary)}</p><span class="card-action">打开任务</span></a>`).join('')}
+      </div></section>`;
+  }).join('');
   return `<header class="topline"><span>工作台 / 任务目录</span><span class="chip"><i class="local-dot"></i>本地运行</span></header>
     <section class="hero">
       <div><h1>选择一个任务</h1><p>使用本地模型分析表格或时间序列。可以先运行示例，再上传自己的数据。</p>
@@ -57,7 +66,8 @@ function home() {
       <div class="hero-art" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span></div>
     </section>
     <div class="section-heading"><h2>任务目录</h2><p>${catalog.tasks.length} 类任务 · ${count} 个本地模型或聚类结果</p></div>
-    <div class="task-grid">${catalog.tasks.map(task => `<a class="task-card" href="#${task.id}">${icon(task)}<span class="method">${escapeHTML(task.method)}</span><h3>${escapeHTML(task.title)}</h3><p>${escapeHTML(task.summary)}</p><span class="card-action">打开任务</span></a>`).join('')}</div>`;
+    <div class="catalog-filters" aria-label="按输入类型筛选">${[['', '全部输入'], ...Object.entries(catalog.input_types)].filter(([type]) => !type || catalog.tasks.some(task => task.input_type === type)).map(([type, label]) => `<button type="button" data-filter="${type}" aria-pressed="${filter === type}">${escapeHTML(label)}</button>`).join('')}</div>
+    ${grouped}`;
 }
 
 function modelPicker(task, selected, busy) {
@@ -73,7 +83,7 @@ function resultPanel(result, task, generation) {
   return `<section class="panel result-panel" aria-label="${generation ? '数据预览' : '运行结果'}">
     <div class="section-heading"><div><h2>${generation ? '数据预览' : '运行结果'}</h2><p role="status">${rows.length} 行${rows.length > shown.length ? ` · 预览前 ${shown.length} 行` : ''}</p></div>
       <div class="actions"><button data-action="download" ${rows.length ? '' : 'disabled'}>下载 CSV</button>${generation ? `<button class="primary" data-action="transfer" ${rows.length ? '' : 'disabled'}>在任务中使用</button>` : ''}</div></div>
-    ${!generation && task.id === 'anomaly' ? '<button class="sort" data-action="sort">按重建误差从高到低排序</button>' : ''}
+    ${!generation && task.result_type === 'anomaly-scores' ? '<button class="sort" data-action="sort">按重建误差从高到低排序</button>' : ''}
     ${!generation ? scatter(task, result) : ''}
     <div class="table-scroll" tabindex="0" role="region" aria-label="结果表格"><table><thead><tr><th scope="col">行</th>${columns.map(column => `<th scope="col" title="${escapeHTML(column)}">${escapeHTML(labels[column] || column)}</th>`).join('')}</tr></thead>
       <tbody>${shown.map((row, index) => `<tr><th scope="row">${index + 1}</th>${row.map(value => `<td title="${value}">${format(value)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>
@@ -86,8 +96,8 @@ function format(value) {
 }
 
 function scatter(task, result) {
-  if (!['clustering', 'dimensionality'].includes(task.id)) return '';
-  const x = result.columns.indexOf(task.id === 'clustering' ? 'x1' : 'z1');
+  if (!['cluster-scatter', 'embedding-scatter'].includes(task.result_type)) return '';
+  const x = result.columns.indexOf(task.result_type === 'cluster-scatter' ? 'x1' : 'z1');
   const y = x + 1;
   const group = result.columns.indexOf('cluster');
   const points = result.rows.slice(0, 200);
@@ -234,6 +244,13 @@ app.addEventListener('submit', event => {
 });
 
 app.addEventListener('click', event => {
+  const filterButton = event.target.closest('button[data-filter]');
+  if (filterButton) {
+    filter = filterButton.dataset.filter;
+    render();
+    document.querySelector(`button[data-filter="${filter}"]`)?.focus();
+    return;
+  }
   const button = event.target.closest('button[data-action]');
   if (!button) return;
   const {page, task} = route();
@@ -279,7 +296,10 @@ async function initialize() {
       state.set(task.id, {model: task.models[0].id, tab: 'manual', csv: '', manual: {},
         parameters: Object.fromEntries(task.parameters.map(parameter => [parameter.key, parameter.default]))});
     }
-    taskNav.innerHTML = catalog.tasks.map(task => `<a href="#${task.id}"><span aria-hidden="true">${icons[task.id] || '◇'}</span>${escapeHTML(task.title)}</a>`).join('');
+    taskNav.innerHTML = Object.entries(catalog.groups).map(([group, label]) => {
+      const tasks = catalog.tasks.filter(task => task.group === group);
+      return tasks.length ? `<p class="nav-group-label">${escapeHTML(label)}</p>${tasks.map(task => `<a href="#${task.id}"><span aria-hidden="true">${icons[task.id] || '◇'}</span>${escapeHTML(task.title)}</a>`).join('')}` : '';
+    }).join('');
     render();
     window.addEventListener('hashchange', () => {
       render();

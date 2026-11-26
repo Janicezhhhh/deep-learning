@@ -7,7 +7,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from .tasks import InputError, MAX_ROWS, TASKS, catalog, generate, model_for, predict
+from .tasks import GROUPS, INPUT_TYPES, InputError, MAX_ROWS, TASKS, catalog, generate, model_for, predict
 
 
 STATIC = Path(__file__).resolve().with_name("web")
@@ -40,7 +40,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_content(HTTPStatus.OK, mimetype, (STATIC / filename).read_bytes())
         elif path == "/api/v1/tasks":
             missing = [name for name in ("torch", "numpy", "matplotlib") if importlib.util.find_spec(name) is None]
-            self.json({"tasks": catalog(), "max_rows": MAX_ROWS, "max_bytes": MAX_BYTES, "missing_dependencies": missing})
+            self.json({"tasks": catalog(), "groups": GROUPS, "input_types": INPUT_TYPES,
+                       "max_rows": MAX_ROWS, "max_bytes": MAX_BYTES, "missing_dependencies": missing})
         else:
             self.json({"error": "页面不存在。"}, HTTPStatus.NOT_FOUND)
 

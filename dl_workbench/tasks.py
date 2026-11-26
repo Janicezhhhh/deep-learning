@@ -3,7 +3,7 @@ import importlib
 import io
 import math
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 from threading import Lock
@@ -14,6 +14,13 @@ MAX_ROWS = 2000
 FEATURES = ("x1", "x2", "x3", "x4")
 WINDOW = tuple(f"t{i}" for i in range(1, 11))
 LOAD_LOCK = Lock()
+GROUPS = {
+    "classify": "判断类别",
+    "forecast": "预测数值",
+    "explore": "探索数据",
+    "recommend": "推荐与评分",
+}
+INPUT_TYPES = {"table": "数值表格", "series": "时间序列"}
 
 
 class InputError(ValueError):
@@ -58,6 +65,9 @@ class Task:
     parameters: tuple[Parameter, ...]
     predict: Callable
     generate: Callable
+    group: str = field(kw_only=True)
+    input_type: str = "table"
+    result_type: str = "table"
 
 
 def module_for(model):
@@ -139,37 +149,39 @@ TASKS = {task.id: task for task in (
          FEATURES[:2], ("predicted_label", "probability_1"), FEATURES[:2] + ("label",), (
              Model("same-sign", "同号分类模型", "classification_project", "classification_model.pth", "ClassificationMLP"),
              Model("opposite-sign", "异号分类模型", "simple_dl_project", "model.pth", "SimpleMLP"),
-         ), (ROWS, SEED), classification, labeled),
+         ), (ROWS, SEED), classification, labeled, group="classify"),
     Task("regression", "数值回归", "MLP", "用三个数值特征预测一个连续数值。",
          "每行提供三个数值特征。示例目标近似为 2×x1 − 1.5×x2 + 0.5×x3。",
          FEATURES[:3], ("prediction",), FEATURES[:3] + ("target",), (
              Model("default", "线性关系回归模型", "regression_project", "regression_model.pth", "RegressionMLP"),
-         ), (ROWS, SEED), regression, labeled),
+         ), (ROWS, SEED), regression, labeled, group="forecast"),
     Task("clustering", "数据聚类", "K-means", "根据已有聚类中心，把二维数据分到三组。",
          "每行提供两个数值。分组编号由模型决定，可能与生成数据中的标签顺序不同。",
          FEATURES[:2], ("cluster", "distance"), FEATURES[:2] + ("source_group",), (
              Model("default", "三个聚类中心", "clustering_project", "cluster_centers.pth", None),
-         ), (Parameter("samples", "样本行数", 120, 3, 1998, 3), SEED), clustering, cluster_data),
+         ), (Parameter("samples", "样本行数", 120, 3, 1998, 3), SEED), clustering, cluster_data,
+         group="explore", result_type="cluster-scatter"),
     Task("dimensionality", "数据降维", "自编码器", "把四维特征压缩为两个坐标，便于查看分布。",
          "每行提供四个数值特征。结果包含二维坐标和四个重建值。",
          FEATURES, ("z1", "z2", "reconstructed_x1", "reconstructed_x2", "reconstructed_x3", "reconstructed_x4"), FEATURES, (
              Model("default", "四维到二维自编码器", "dimensionality_reduction_project", "autoencoder_model.pth", "AutoEncoder"),
-         ), (ROWS, SEED), reduction, reduction_data),
+         ), (ROWS, SEED), reduction, reduction_data, group="explore", result_type="embedding-scatter"),
     Task("anomaly", "异常检测", "自编码器", "计算重建误差，找出值得优先核查的记录。",
          "每行提供两个数值。重建误差越大越值得核查，结果可按误差排序。",
          FEATURES[:2], ("reconstruction_error",), FEATURES[:2] + ("is_injected_anomaly",), (
              Model("default", "异常检测自编码器", "anomaly_detection_project", "anomaly_model.pth", "AnomalyAutoEncoder"),
-         ), (Parameter("normal", "正常样本数", 100, 1, 1000), Parameter("anomalies", "注入异常数", 20, 0, 1000), SEED), anomaly, anomaly_data),
+         ), (Parameter("normal", "正常样本数", 100, 1, 1000), Parameter("anomalies", "注入异常数", 20, 0, 1000), SEED), anomaly, anomaly_data,
+         group="explore", result_type="anomaly-scores"),
     Task("sequence", "序列预测", "LSTM", "用最近 10 个观测值预测下一步。",
          "每行提供按时间从早到晚排列的 10 个数值，对应 t1 到 t10。",
          WINDOW, ("next_value",), WINDOW + ("actual_next",), (
              Model("default", "单变量序列模型", "sequence_modeling_project", "sequence_model.pth", "LSTMModel"),
-         ), (ROWS, SEED), regression, sequence_data),
+         ), (ROWS, SEED), regression, sequence_data, group="forecast", input_type="series"),
     Task("recommendation", "推荐评分", "矩阵分解", "预测已有用户对已知物品的评分。",
          "每行提供一对已有编号。用户范围为 0–49，物品范围为 0–29。",
          ("user_id", "item_id"), ("predicted_rating",), ("user_id", "item_id", "rating"), (
              Model("default", "用户–物品评分模型", "recommendation_project", "recommendation_model.pth", "MatrixFactorization", (50, 30)),
-         ), (Parameter("density", "评分覆盖率（%）", 30, 1, 100), SEED), recommendation, rating_data),
+         ), (Parameter("density", "评分覆盖率（%）", 30, 1, 100), SEED), recommendation, rating_data, group="recommend"),
 )}
 
 
@@ -185,6 +197,7 @@ def model_for(task, model_id):
 def catalog():
     return [{
         "id": task.id, "title": task.title, "method": task.method,
+        "group": task.group, "input_type": task.input_type, "result_type": task.result_type,
         "summary": task.summary, "input_hint": task.input_hint, "columns": task.columns,
         "output": task.output, "dataset": task.dataset,
         "models": [{"id": m.id, "name": m.name, "has_weights": (ROOT / m.module / m.weights).is_file()}

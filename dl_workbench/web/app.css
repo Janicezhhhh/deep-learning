@@ -13,11 +13,11 @@
 body { margin: 0; background: var(--paper); color: var(--ink); }
 a { color: inherit; text-decoration: none; }
 button, input, select, textarea { font: inherit; }
-h1, h2, h3, p { margin: 0; }
+h1, h2, h3, h4, p { margin: 0; }
 button, a, input, textarea, select { -webkit-tap-highlight-color: transparent; }
 :focus-visible { outline: 3px solid #3378f1; outline-offset: 3px; }
 .shell { min-height: 100vh; display: grid; grid-template-columns: 234px minmax(0, 1fr); }
-.rail { display: flex; flex-direction: column; background: var(--navy); color: #eaf2fb; min-height: 100vh; padding: 28px 18px 20px; position: sticky; top: 0; align-self: start; }
+.rail { display: flex; flex-direction: column; background: var(--navy); color: #eaf2fb; min-height: 100vh; max-height: 100vh; overflow-y: auto; padding: 28px 18px 20px; position: sticky; top: 0; align-self: start; }
 .brand { display: flex; align-items: center; gap: 12px; margin: 0 8px 38px; font-size: 1.22rem; font-weight: 750; letter-spacing: .025em; }
 .brand small { display: block; font-size: .78rem; font-weight: 500; color: #a4b8d3; letter-spacing: .015em; }
 .brand-mark { width: 39px; height: 39px; display: grid; grid-template-columns: repeat(2, 7px); grid-template-rows: repeat(2, 7px); place-content: center; gap: 4px; background: #2b66ed; border-radius: 11px; flex: 0 0 auto; }
@@ -28,6 +28,7 @@ button, a, input, textarea, select { -webkit-tap-highlight-color: transparent; }
 .rail nav a:hover, .rail nav a[aria-current] { background: #233b61; color: white; }
 .rail nav a[aria-current] span { color: #b8d1ff; }
 .nav-label { color: #94a9c4; font-size: .82rem; margin: 25px 12px 8px; }
+.nav-group-label { margin: 15px 12px 4px; font-size: .78rem; color: #a6b9d1; }
 .rail-foot { margin: auto 10px 0; padding-top: 30px; display: flex; align-items: center; gap: 10px; color: #adbed3; font-size: .84rem; }
 .local-dot { width: 8px; height: 8px; border-radius: 50%; background: #2cb692; display: inline-block; flex: 0 0 auto; }
 #app { width: 100%; max-width: 1480px; padding: 25px clamp(22px, 4vw, 57px) 52px; margin: 0 auto; outline: none; }
@@ -48,10 +49,14 @@ button, a, input, textarea, select { -webkit-tap-highlight-color: transparent; }
 .section-heading p, .hint { color: var(--muted); font-size: .9rem; }
 h2 { font-size: 1.25rem; font-weight: 750; }
 .task-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 15px; }
+.task-group { margin: 23px 0 27px; }
+.task-group > h3 { font-size: 1.05rem; margin-bottom: 10px; }
+.catalog-filters { display: flex; flex-wrap: wrap; gap: 8px; }
+.catalog-filters button[aria-pressed=true] { background: #e4edff; border-color: #a0b8ed; color: #1646a0; }
 .task-card { display: grid; grid-template-columns: 1fr auto; gap: 8px 5px; padding: 19px; min-height: 178px; background: var(--white); border: 1px solid var(--line); border-radius: 13px; transition: border-color .16s, box-shadow .16s; }
 .task-card:hover { border-color: #8baef0; box-shadow: 0 8px 24px #1d417210; }
-.task-card h3, .task-card p, .card-action { grid-column: 1 / -1; }
-.task-card h3 { margin-top: 1px; font-size: 1.08rem; }
+.task-card h4, .task-card p, .card-action { grid-column: 1 / -1; }
+.task-card h4 { margin-top: 1px; font-size: 1.08rem; }
 .task-card p { color: var(--muted); font-size: .93rem; }
 .method { align-self: start; color: var(--muted); font-size: .85rem; background: #f0f4f8; padding: 2px 8px; border-radius: 5px; }
 .task-icon { color: #174eb9; background: #e8f0ff; width: 42px; height: 42px; display: inline-grid; place-items: center; font-size: 1.4rem; font-weight: 650; border-radius: 10px; flex: 0 0 auto; line-height: 1; }
